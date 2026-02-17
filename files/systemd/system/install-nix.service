@@ -1,0 +1,14 @@
+[Unit]
+Description=Install Nix Package Manager (first boot)
+ConditionFirstBoot=yes
+After=network-online.target
+Wants=network-online.target
+Before=first-boot-complete.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/mirror-os/install-nix.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=first-boot-complete.target
