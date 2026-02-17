@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/mirror-os/mirror-os:
+    use-sigstore-attachments: true
