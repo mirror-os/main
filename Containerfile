@@ -5,13 +5,6 @@ FROM quay.io/fedora-ostree-desktops/cosmic-atomic:43
 # at runtime (composefs) and cannot be modified by users.
 RUN mkdir -p /nix
 
-# Fetch Sigstore root certificates for cosign signature verification.
-# These are needed by /etc/containers/policy.json to verify that
-# Mirror OS images were signed by our GitHub Actions workflow.
-RUN mkdir -p /etc/pki/sigstore && \
-    curl -o /etc/pki/sigstore/roots.pem https://fulcio.sigstore.dev/api/v1/rootCert && \
-    curl -o /etc/pki/sigstore/rekor.pem https://rekor.sigstore.dev/api/v1/log/publicKey
-
 # Install the Mirror OS cosign public key used to verify image signatures.
 # The matching private key is stored as a GitHub Actions secret and never
 # committed to the repository.
