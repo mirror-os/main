@@ -38,5 +38,8 @@ jobs:
           tags: ghcr.io/mirror-os/mirror-os:latest
 
       - name: Sign image
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
         run: |
-          cosign sign --yes ghcr.io/mirror-os/mirror-os@${{ steps.build.outputs.digest }}
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            ghcr.io/mirror-os/mirror-os@${{ steps.build.outputs.digest }}
