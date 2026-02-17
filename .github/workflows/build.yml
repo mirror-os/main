@@ -42,4 +42,5 @@ jobs:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
         run: |
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            --tlog-upload=false \
             ghcr.io/mirror-os/mirror-os@${{ steps.build.outputs.digest }}
