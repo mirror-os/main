@@ -1,0 +1,19 @@
+{
+  "default": [{"type": "insecureAcceptAnything"}],
+  "transports": {
+    "docker": {
+      "ghcr.io/mirror-os/mirror-os": [
+        {
+          "type": "sigstoreSigned",
+          "fulcio": {
+            "caRootsPath": "/etc/pki/sigstore/roots.pem",
+            "oidcIssuer": "https://token.actions.githubusercontent.com",
+            "subjectEmail": "https://github.com/mirror-os/mirror-os/.github/workflows/build.yml@refs/heads/main"
+          },
+          "rekorPublicKeyPath": "/etc/pki/sigstore/rekor.pem",
+          "signedIdentity": {"type": "matchRepository"}
+        }
+      ]
+    }
+  }
+}
