@@ -5,6 +5,37 @@ FROM quay.io/fedora-ostree-desktops/cosmic-atomic:43
 # at runtime (composefs) and cannot be modified by users.
 RUN mkdir -p /nix
 
+# Add RPM Fusion free and nonfree repositories.
+# These are required for multimedia codecs and proprietary drivers.
+RUN rpm-ostree install \
+    https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-43.noarch.rpm \
+    https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-43.noarch.rpm && \
+    ostree container commit
+
+# Install all available multimedia codecs.
+# ffmpeg and libavcodec-freeworld cover general audio/video decoding.
+# The gstreamer plugins cover the full codec matrix for GNOME/COSMIC apps.
+# mesa-va-drivers and gstreamer1-vaapi enable hardware-accelerated decoding
+# on Intel and AMD GPUs via VA-API.
+# mesa-vdpau-drivers enables VDPAU (used by some older apps and AMD cards).
+RUN rpm-ostree install \
+    ffmpeg \
+    libavcodec-freeworld \
+    gstreamer1-plugins-base \
+    gstreamer1-plugins-good \
+    gstreamer1-plugins-good-extras \
+    gstreamer1-plugins-bad-free \
+    gstreamer1-plugins-bad-free-extras \
+    gstreamer1-plugins-bad-freeworld \
+    gstreamer1-plugins-ugly \
+    gstreamer1-plugin-libav \
+    gstreamer1-vaapi \
+    mesa-va-drivers \
+    mesa-va-drivers-freeworld \
+    mesa-vdpau-drivers \
+    mesa-vdpau-drivers-freeworld && \
+    ostree container commit
+
 # Install the Mirror OS cosign public key used to verify image signatures.
 # The matching private key is stored as a GitHub Actions secret and never
 # committed to the repository.
