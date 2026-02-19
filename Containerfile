@@ -6,26 +6,43 @@ FROM quay.io/fedora-ostree-desktops/cosmic-atomic:43
 RUN mkdir -p /nix
 
 # Add RPM Fusion free and nonfree repositories.
-# These are required for multimedia codecs and proprietary drivers.
+# These are required for freeworld codec replacements and future driver support.
 RUN rpm-ostree install \
     https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-43.noarch.rpm \
     https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-43.noarch.rpm && \
     ostree container commit
 
-# Download freeworld replacements as local RPM files, then pass them directly
-# to rpm-ostree override replace. This is required because non-local replacement
-# overrides are not supported in container builds — packages must be present
-# on disk before the override can be applied.
+# Remove the codec-restricted free variants from the base image and install
+# the full freeworld replacements in a single transaction using --install.
+# This avoids the conflict that occurs when rpm-ostree tries to install
+# freeworld packages while their free counterparts are still present.
+RUN rpm-ostree override remove \
+    ffmpeg-free \
+    libavcodec-free \
+    libavdevice-free \
+    libavfilter-free \
+    libavformat-free \
+    libavutil-free \
+    libpostproc-free \
+    libswresample-free \
+    libswscale-free \
+    --install=ffmpeg \
+    --install=ffmpeg-libs \
+    --install=libavcodec-freeworld && \
+    ostree container commit
+
+# Replace mesa-va-drivers with the freeworld variant to unlock H.264/HEVC
+# hardware decoding on Intel and AMD GPUs via VA-API.
+# --arch=x86_64 prevents dnf from downloading the i686 variant, which has
+# an unresolvable spirv-tools-libs dependency in the container build context.
 RUN dnf download \
+    --arch=x86_64 \
     --repo=rpmfusion-free \
     --repo=rpmfusion-free-updates \
-    --destdir=/tmp/codec-overrides \
-    ffmpeg \
-    ffmpeg-libs \
-    libavcodec-freeworld \
+    --destdir=/tmp/mesa-overrides \
     mesa-va-drivers && \
-    rpm-ostree override replace /tmp/codec-overrides/*.rpm && \
-    rm -rf /tmp/codec-overrides && \
+    rpm-ostree override replace /tmp/mesa-overrides/*.rpm && \
+    rm -rf /tmp/mesa-overrides && \
     ostree container commit
 
 # Install remaining multimedia codecs that have no conflicts with the base image.
