@@ -46,7 +46,7 @@ RUN dnf download \
     ostree container commit
 
 # Install remaining multimedia codecs that have no conflicts with the base image.
-# gstreamer1-plugin-va replaces the deprecated gstreamer1-vaapi on Fedora 40+.
+# VA-API GStreamer support is included in gstreamer1-plugins-bad-free on Fedora 43.
 RUN rpm-ostree install \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
@@ -55,8 +55,7 @@ RUN rpm-ostree install \
     gstreamer1-plugins-bad-free-extras \
     gstreamer1-plugins-bad-freeworld \
     gstreamer1-plugins-ugly \
-    gstreamer1-plugin-libav \
-    gstreamer1-plugin-va && \
+    gstreamer1-plugin-libav && \
     ostree container commit
 
 # Install the Mirror OS cosign public key used to verify image signatures.
