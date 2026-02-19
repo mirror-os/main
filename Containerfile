@@ -12,15 +12,24 @@ RUN rpm-ostree install \
     https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-43.noarch.rpm && \
     ostree container commit
 
-# Install all available multimedia codecs.
-# ffmpeg and libavcodec-freeworld cover general audio/video decoding.
-# The gstreamer plugins cover the full codec matrix for GNOME/COSMIC apps.
-# mesa-va-drivers and gstreamer1-vaapi enable hardware-accelerated decoding
-# on Intel and AMD GPUs via VA-API.
-# mesa-vdpau-drivers enables VDPAU (used by some older apps and AMD cards).
-RUN rpm-ostree install \
+# Replace packages that conflict with base image contents.
+# ffmpeg and libavcodec-freeworld replace the codec-restricted ffmpeg-free variants
+# already present in the base image. mesa-va-drivers is replaced with the freeworld
+# variant to unlock H.264/HEVC hardware decoding on Intel and AMD GPUs.
+# mesa-vdpau-drivers is intentionally omitted — it was merged into mesa in Fedora 43
+# and is no longer a separate installable package.
+RUN rpm-ostree override replace \
+    --experimental \
+    --from repo=rpmfusion-free-updates \
     ffmpeg \
+    ffmpeg-libs \
     libavcodec-freeworld \
+    mesa-va-drivers && \
+    ostree container commit
+
+# Install remaining multimedia codecs that have no conflicts with the base image.
+# gstreamer1-plugin-va replaces the deprecated gstreamer1-vaapi on Fedora 40+.
+RUN rpm-ostree install \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
     gstreamer1-plugins-good-extras \
@@ -29,11 +38,7 @@ RUN rpm-ostree install \
     gstreamer1-plugins-bad-freeworld \
     gstreamer1-plugins-ugly \
     gstreamer1-plugin-libav \
-    gstreamer1-vaapi \
-    mesa-va-drivers \
-    mesa-va-drivers-freeworld \
-    mesa-vdpau-drivers \
-    mesa-vdpau-drivers-freeworld && \
+    gstreamer1-plugin-va && \
     ostree container commit
 
 # Install the Mirror OS cosign public key used to verify image signatures.
