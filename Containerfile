@@ -13,14 +13,14 @@ RUN rpm-ostree install \
     ostree container commit
 
 # Replace packages that conflict with base image contents.
-# ffmpeg and libavcodec-freeworld replace the codec-restricted ffmpeg-free variants
-# already present in the base image. mesa-va-drivers is replaced with the freeworld
-# variant to unlock H.264/HEVC hardware decoding on Intel and AMD GPUs.
-# mesa-vdpau-drivers is intentionally omitted — it was merged into mesa in Fedora 43
-# and is no longer a separate installable package.
+# ffmpeg and ffmpeg-libs replace the codec-restricted ffmpeg-free variants.
+# libavcodec-freeworld replaces libavcodec-free.
+# mesa-va-drivers is replaced with the freeworld variant to unlock H.264/HEVC
+# hardware decoding on Intel and AMD GPUs via VA-API.
+# The --from constraint is intentionally omitted so rpm-ostree resolves each
+# package from whichever RPM Fusion repo carries it (free vs free-updates).
 RUN rpm-ostree override replace \
     --experimental \
-    --from repo=rpmfusion-free-updates \
     ffmpeg \
     ffmpeg-libs \
     libavcodec-freeworld \
