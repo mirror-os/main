@@ -12,19 +12,20 @@ RUN rpm-ostree install \
     https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-43.noarch.rpm && \
     ostree container commit
 
-# Replace packages that conflict with base image contents.
-# ffmpeg and ffmpeg-libs replace the codec-restricted ffmpeg-free variants.
-# libavcodec-freeworld replaces libavcodec-free.
-# mesa-va-drivers is replaced with the freeworld variant to unlock H.264/HEVC
-# hardware decoding on Intel and AMD GPUs via VA-API.
-# The --from constraint is intentionally omitted so rpm-ostree resolves each
-# package from whichever RPM Fusion repo carries it (free vs free-updates).
-RUN rpm-ostree override replace \
-    --experimental \
+# Download freeworld replacements as local RPM files, then pass them directly
+# to rpm-ostree override replace. This is required because non-local replacement
+# overrides are not supported in container builds — packages must be present
+# on disk before the override can be applied.
+RUN dnf download \
+    --repo=rpmfusion-free \
+    --repo=rpmfusion-free-updates \
+    --destdir=/tmp/codec-overrides \
     ffmpeg \
     ffmpeg-libs \
     libavcodec-freeworld \
     mesa-va-drivers && \
+    rpm-ostree override replace /tmp/codec-overrides/*.rpm && \
+    rm -rf /tmp/codec-overrides && \
     ostree container commit
 
 # Install remaining multimedia codecs that have no conflicts with the base image.
