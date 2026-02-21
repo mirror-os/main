@@ -73,19 +73,17 @@ fi
 log "Running home-manager switch..."
 sudo -u "$REAL_USER" bash -c "
   source '$NIX_PROFILE'
+  export PATH=\"\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH\"
   cd '$HM_DIR'
   nix run 'github:nix-community/home-manager' -- switch --flake '.#$REAL_USER'
 "
 
 # ── Set zsh as the default shell ─────────────────────────────────────────────
-ZSH_PATH=$(sudo -u "$REAL_USER" bash -c "source '$NIX_PROFILE'; which zsh" 2>/dev/null || true)
-if [[ -x "$ZSH_PATH" ]]; then
-  log "Setting zsh as default shell: $ZSH_PATH"
-  grep -qxF "$ZSH_PATH" /etc/shells || echo "$ZSH_PATH" >> /etc/shells
-  chsh -s "$ZSH_PATH" "$REAL_USER"
-else
-  log "Warning: zsh not found in PATH, shell not changed."
-fi
+ZSH_PATH=$(sudo -u "$REAL_USER" bash -c "
+  source '$NIX_PROFILE'
+  export PATH=\"\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH\"
+  which zsh
+" 2>/dev/null || true)
 
 # ── Write stamp ───────────────────────────────────────────────────────────────
 mkdir -p /var/lib/mirror-os
