@@ -1,7 +1,7 @@
 { pkgs, ... }:
 
 {
-  imports = [ /usr/share/mirror-os/home-manager/default.nix ];
+  imports = [ ./mirror-os-defaults.nix ];
 
   # ── Identity ──────────────────────────────────────────────────────────────
   # These are set automatically by the first-boot service.
