@@ -1,0 +1,101 @@
+# Mirror OS — system-provided Home Manager defaults
+#
+# This file is shipped in the image at /usr/share/mirror-os/home-manager/default.nix
+# and is updated with every image release.
+#
+# It is imported by the user's ~/.config/home-manager/home.nix.
+# Users can override anything declared here in their own home.nix — their
+# settings always win. Remove the import line entirely to fully detach.
+#
+# NOTE: This module requires the following flake inputs to be present in the
+# user's flake.nix: nix-flatpak (homeManagerModules.nix-flatpak) and
+# nixvim (homeManagerModules.nixvim). The scaffolded flake.nix includes
+# these automatically.
+
+{ pkgs, lib, ... }:
+
+{
+  # ── Shell — Zsh ───────────────────────────────────────────────────────────
+  programs.zsh = {
+    enable = true;
+
+    oh-my-zsh = {
+      enable = true;
+      theme = "robbyrussell";
+      plugins = [ "git" ];
+    };
+
+    plugins = [
+      {
+        name = "fast-syntax-highlighting";
+        src = pkgs.zsh-fast-syntax-highlighting;
+        file = "share/zsh/site-functions/fast-syntax-highlighting.plugin.zsh";
+      }
+      {
+        name = "zsh-autosuggestions";
+        src = pkgs.zsh-autosuggestions;
+        file = "share/zsh-autosuggestions/zsh-autosuggestions.zsh";
+      }
+    ];
+  };
+
+  # ── Editor — NixVim ───────────────────────────────────────────────────────
+  programs.nixvim = {
+    enable = true;
+
+    colorschemes.catppuccin = {
+      enable = true;
+      settings.flavour = "mocha";
+    };
+
+    plugins.lualine = {
+      enable = true;
+      settings.options.theme = "catppuccin";
+    };
+
+    opts = {
+      number = true;
+      relativenumber = true;
+      expandtab = true;
+      tabstop = 2;
+      shiftwidth = 2;
+    };
+  };
+
+  # ── htop ─────────────────────────────────────────────────────────────────
+  programs.htop = {
+    enable = true;
+    settings = {
+      color_scheme = 5;          # Black Night — dark and readable
+      highlight_base_name = 1;
+      highlight_megabytes = 1;
+      highlight_threads = 1;
+      show_thread_names = 1;
+      tree_view = 1;
+      header_margin = 0;
+      show_cpu_frequency = 1;
+    };
+  };
+
+  # ── Flatpaks via nix-flatpak ──────────────────────────────────────────────
+  services.flatpak = {
+    enable = true;
+
+    packages = [
+      # AppImage manager — handles .AppImage files with launcher integration
+      { appId = "it.mijoras.GearLever"; origin = "flathub"; }
+    ];
+
+    overrides.global = {
+      # Force consistent GTK theme and icons across all Flatpak apps
+      Environment = {
+        GTK_THEME = "adw-gtk3-dark";
+        ICON_THEME = "Papirus-Dark";
+        # Request server-side decorations (libadwaita apps may ignore this)
+        GTK_CSD = "0";
+        # Enable compositor-side decorations for Qt/Wayland apps
+        QT_WAYLAND_DISABLE_WINDOWDECORATION = "0";
+      };
+    };
+  };
+}

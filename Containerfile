@@ -58,6 +58,13 @@ RUN rpm-ostree install \
     gstreamer1-plugin-libav && \
     ostree container commit
 
+# Install distrobox to allow running any Linux distribution inside a container
+# with full desktop integration (exported icons, applications, and terminal access).
+# Baked into the image layer so it is available before Nix is initialised.
+RUN rpm-ostree install \
+    distrobox && \
+    ostree container commit
+
 # Install the Mirror OS cosign public key used to verify image signatures.
 # The matching private key is stored as a GitHub Actions secret and never
 # committed to the repository.
@@ -81,3 +88,20 @@ COPY files/scripts/install-nix.sh /usr/libexec/mirror-os/install-nix.sh
 COPY files/systemd/system/install-nix.service /usr/lib/systemd/system/install-nix.service
 RUN chmod +x /usr/libexec/mirror-os/install-nix.sh && \
     systemctl enable install-nix.service
+
+# Ship the Mirror OS Home Manager defaults at a read-only system path.
+# This includes the default.nix module (zsh, NixVim, htop, nix-flatpak) as
+# well as the flake.nix and home.nix templates that are scaffolded once into
+# the user's ~/.config/home-manager/ on first boot. Image updates replace
+# this directory; user files in /home are never touched.
+COPY files/home-manager/ /usr/share/mirror-os/home-manager/
+
+# Install the Home Manager setup script and its systemd service.
+# The service runs after Nix is ready (requires install-nix.service) and uses
+# a stamp file at /var/lib/mirror-os/nix-hm-installed to ensure it only
+# performs the full setup once. On rebase it re-runs to apply any updated
+# Mirror OS defaults while leaving the user's own home.nix untouched.
+COPY files/scripts/mirror-nix-setup.sh /usr/libexec/mirror-os/mirror-nix-setup.sh
+COPY files/systemd/system/mirror-nix-setup.service /usr/lib/systemd/system/mirror-nix-setup.service
+RUN chmod +x /usr/libexec/mirror-os/mirror-nix-setup.sh && \
+    systemctl enable mirror-nix-setup.service
