@@ -60,6 +60,10 @@ if [[ ! -f "$HM_DIR/home.nix" ]]; then
     "$SYSTEM_HM_DIR/home.template.nix" > "$HM_DIR/home.nix"
 fi
 
+# Copy Mirror OS defaults as a local relative import — absolute paths
+# are forbidden in pure flake evaluation mode.
+cp "$SYSTEM_HM_DIR/default.nix" "$HM_DIR/mirror-os-defaults.nix"
+
 chown -R "$REAL_USER:$REAL_USER" "$HM_DIR"
 
 # ── Initialise git repo (flakes require a git repo) ───────────────────────────
