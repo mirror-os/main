@@ -18,30 +18,21 @@
   # Let Home Manager manage itself so the `home-manager` CLI stays in PATH
   # and can apply future configuration updates.
   programs.home-manager.enable = true;
-  
+
   # ── Shell — Zsh ───────────────────────────────────────────────────────────
-  programs.zsh = {
+programs.zsh = {
+  enable = true;
+
+  # Built-in Home Manager options — no manual plugin sourcing needed
+  autosuggestion.enable = true;
+  syntaxHighlighting.enable = true;
+
+  oh-my-zsh = {
     enable = true;
-
-    oh-my-zsh = {
-      enable = true;
-      theme = "robbyrussell";
-      plugins = [ "git" ];
-    };
-
-    plugins = [
-      {
-        name = "fast-syntax-highlighting";
-        src = pkgs.zsh-fast-syntax-highlighting;
-        file = "share/zsh/site-functions/fast-syntax-highlighting.plugin.zsh";
-      }
-      {
-        name = "zsh-autosuggestions";
-        src = pkgs.zsh-autosuggestions;
-        file = "share/zsh-autosuggestions/zsh-autosuggestions.zsh";
-      }
-    ];
+    theme = "robbyrussell";
+    plugins = [ "git" ];
   };
+};
 
   # ── Editor — NixVim ───────────────────────────────────────────────────────
   programs.nixvim = {
