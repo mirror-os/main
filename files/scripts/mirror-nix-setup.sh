@@ -42,6 +42,11 @@ chown -R "$REAL_USER:$REAL_USER" "$NIX_CONF_DIR"
 # ── Scaffold user config (only if not already present) ───────────────────────
 HM_DIR="$REAL_HOME/.config/home-manager"
 
+# Set a placeholder git identity for the home-manager config repo.
+# Without this, git commit fails on machines with no global git config.
+sudo -u "$REAL_USER" git -C "$HM_DIR" config user.email "user@mirror-os.local"
+sudo -u "$REAL_USER" git -C "$HM_DIR" config user.name "Mirror OS User"
+
 if [[ ! -f "$HM_DIR/flake.nix" ]]; then
   log "Scaffolding flake.nix..."
   mkdir -p "$HM_DIR"
