@@ -91,7 +91,7 @@ modules:
         destination: /etc/firewalld/services/localsend.xml
 
   # Install LocalSend on first boot for all users via Flathub.
-  - type: default-flatpaks
+  - type: default-flatpaks@v1
     notify: true
     system:
       repo-url: https://dl.flathub.org/repo/flathub.flatpakrepo
