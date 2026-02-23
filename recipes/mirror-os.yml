@@ -89,6 +89,8 @@ modules:
         destination: /usr/lib/systemd/system/mirror-nix-setup.service
       - source: firewalld/services/localsend.xml
         destination: /etc/firewalld/services/localsend.xml
+      - source: scripts/mirror-dev-reset.sh
+        destination: /usr/local/bin/mirror-dev-reset
 
   # Install LocalSend on first boot for all users via Flathub.
   - type: default-flatpaks@v1
