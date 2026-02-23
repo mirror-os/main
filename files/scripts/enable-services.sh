@@ -7,3 +7,5 @@ chmod +x /usr/libexec/mirror-os/mirror-nix-setup.sh
 
 systemctl enable install-nix.service
 systemctl enable mirror-nix-setup.service
+
+firewall-offline-cmd --add-service=localsend

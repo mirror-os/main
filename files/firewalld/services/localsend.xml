@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>LocalSend</short>
+  <description>LocalSend peer-to-peer file transfer. Requires TCP and UDP port 53317.</description>
+  <port protocol="tcp" port="53317"/>
+  <port protocol="udp" port="53317"/>
+</service>
