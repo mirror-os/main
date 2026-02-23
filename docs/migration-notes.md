@@ -1,3 +1,12 @@
+# Migration Notes: Containerfile → BlueBuild
+
+This document is the permanent reference for the migration from a raw `Containerfile` build system to BlueBuild. The files that were deleted (`Containerfile` and `.github/workflows/build.yml`) are reproduced in full below. **BlueBuild is now the source of truth.** Do not use these for anything other than historical reference.
+
+---
+
+## Original Containerfile
+
+```dockerfile
 FROM quay.io/fedora-ostree-desktops/cosmic-atomic:43
 
 # Create /nix mountpoint for the Nix package manager.
@@ -105,3 +114,81 @@ COPY files/scripts/mirror-nix-setup.sh /usr/libexec/mirror-os/mirror-nix-setup.s
 COPY files/systemd/system/mirror-nix-setup.service /usr/lib/systemd/system/mirror-nix-setup.service
 RUN chmod +x /usr/libexec/mirror-os/mirror-nix-setup.sh && \
     systemctl enable mirror-nix-setup.service
+```
+
+---
+
+## Original `.github/workflows/build.yml`
+
+```yaml
+name: Build Mirror OS
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          tags: ghcr.io/mirror-os/mirror-os:latest
+
+      - name: Sign image
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+            --tlog-upload=false \
+            ghcr.io/mirror-os/mirror-os@${{ steps.build.outputs.digest }}
+```
+
+---
+
+## Architectural Decision Notes
+
+### Why `/nix` must be pre-created in the image
+
+Fedora Atomic uses composefs, which makes the root filesystem read-only at runtime. A user or service cannot run `mkdir /nix` after booting — the operation will fail with a read-only filesystem error. The `/nix` directory therefore has to exist as an empty mountpoint inside the image layer itself, where the Nix daemon can bind-mount the actual Nix store on top of it at runtime. The Determinate Systems installer expects this directory to exist before it runs.
+
+### Why the freeworld codec override uses a single `override remove ... --install` transaction
+
+Fedora's base Atomic images ship "free" variants of ffmpeg and related libraries (`ffmpeg-free`, `libavcodec-free`, etc.) that are intentionally crippled to comply with distribution policies. The RPM Fusion freeworld replacements (`ffmpeg`, `libavcodec-freeworld`) conflict with these packages by providing the same shared libraries. Attempting to install the freeworld packages while the free counterparts are still present causes an `rpm-ostree` conflict error. The solution is to remove and install in a single atomic transaction using `override remove ... --install`, which resolves the conflict within one operation.
+
+### Why mesa-va-drivers needs a separate `dnf download` step
+
+The `rpm-ostree override replace` command for mesa-va-drivers cannot use BlueBuild's standard `replace:` module field (which is designed for COPR repositories) because the mesa freeworld package is in the standard RPM Fusion free repo, not COPR. More importantly, simply fetching the RPM by name would also pull the i686 variant, which has an unresolvable `spirv-tools-libs` dependency in the container build context. The `--arch=x86_64` flag on `dnf download` prevents this, but that flag is not exposed through the BlueBuild rpm-ostree module. A build-time script is therefore required.
+
+### Why the stamp-file approach is used for the first-boot services
+
+The `install-nix.service` checks for `/var/lib/mirror-os/nix-installed` before running, and writes that file upon success. The `mirror-nix-setup.service` uses a similar stamp at `/var/lib/mirror-os/nix-hm-installed`. This prevents the setup from re-running on every boot and from running again after a routine image rebase. On a fresh install neither stamp exists, so both services run. On subsequent boots they are skipped. The `/var/lib/` directory persists across reboots on Atomic systems because it is part of the writable stateful layer.
+
+### Why static cosign key signing was chosen over keyless
+
+The `policy.json` shipped in the image uses `sigstoreSigned` with an explicit `keyPath` pointing to `files/cosign.pub`. Keyless (OIDC-based) cosign signing produces certificates tied to the GitHub Actions identity rather than a static key, but the container runtime's `sigstoreSigned` policy type requires a stable, known public key at verification time. Keyless verification would require a different policy type and a trust root pointing to Fulcio, which adds complexity and an external dependency to every container pull. Static key signing keeps the verification self-contained and registry-agnostic.

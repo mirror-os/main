@@ -15,32 +15,10 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - name: Build Mirror OS image
+        uses: blue-build/github-action@v1
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Containerfile
-          push: true
-          tags: ghcr.io/mirror-os/mirror-os:latest
-
-      - name: Sign image
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
-            --tlog-upload=false \
-            ghcr.io/mirror-os/mirror-os@${{ steps.build.outputs.digest }}
+          recipe: mirror-os.yml
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          registry_token: ${{ github.token }}
+          pr_event_number: ${{ github.event.number }}

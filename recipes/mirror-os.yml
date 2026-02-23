@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+name: mirror-os
+description: Mirror OS — base image
+base-image: quay.io/fedora-ostree-desktops/cosmic-atomic
+image-version: 43
+
+modules:
+  # Create the /nix mountpoint before any package operations.
+  # The root filesystem is read-only at runtime (composefs), so this directory
+  # must exist in the image itself — users cannot create it after booting.
+  - type: script
+    scripts:
+      - create-nix-mountpoint.sh
+
+  # Add RPM Fusion free and nonfree repositories.
+  # These are required for freeworld codec replacements and future driver support.
+  - type: rpm-ostree
+    install:
+      - https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-%OS_VERSION%.noarch.rpm
+      - https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-%OS_VERSION%.noarch.rpm
+
+  # Remove the restricted-codec free variants shipped in the base image and
+  # replace them with the full freeworld versions in a single transaction.
+  # Combining remove and install avoids the conflict that occurs when the free
+  # counterparts are still present during the freeworld install.
+  - type: rpm-ostree
+    remove:
+      - ffmpeg-free
+      - libavcodec-free
+      - libavdevice-free
+      - libavfilter-free
+      - libavformat-free
+      - libavutil-free
+      - libpostproc-free
+      - libswresample-free
+      - libswscale-free
+    install:
+      - ffmpeg
+      - ffmpeg-libs
+      - libavcodec-freeworld
+
+  # Replace mesa-va-drivers with the freeworld variant to unlock H.264/HEVC
+  # hardware decoding on Intel and AMD GPUs via VA-API.
+  # Uses a build-time script because the override requires dnf download with
+  # explicit --arch=x86_64 to avoid an unresolvable i686 spirv-tools-libs
+  # dependency that appears in the container build context.
+  - type: script
+    scripts:
+      - mesa-override.sh
+
+  # Install GStreamer multimedia plugins.
+  # VA-API GStreamer support is included in gstreamer1-plugins-bad-free on Fedora 43.
+  - type: rpm-ostree
+    install:
+      - gstreamer1-plugins-base
+      - gstreamer1-plugins-good
+      - gstreamer1-plugins-good-extras
+      - gstreamer1-plugins-bad-free
+      - gstreamer1-plugins-bad-free-extras
+      - gstreamer1-plugins-bad-freeworld
+      - gstreamer1-plugins-ugly
+      - gstreamer1-plugin-libav
+
+  # Install distrobox for containerized Linux environments with full desktop
+  # integration. Baked into the image layer so it is available before Nix is ready.
+  - type: rpm-ostree
+    install:
+      - distrobox
+
+  # Copy configuration files, first-boot scripts, and Home Manager defaults
+  # into the image. Source paths are relative to the repository's files/ directory.
+  - type: files
+    files:
+      - source: cosign.pub
+        destination: /etc/pki/mirror-os/cosign.pub
+      - source: policy.json
+        destination: /etc/containers/policy.json
+      - source: registries.d/mirror-os.yaml
+        destination: /etc/containers/registries.d/mirror-os.yaml
+      - source: scripts/install-nix.sh
+        destination: /usr/libexec/mirror-os/install-nix.sh
+      - source: systemd/system/install-nix.service
+        destination: /usr/lib/systemd/system/install-nix.service
+      - source: home-manager/
+        destination: /usr/share/mirror-os/home-manager/
+      - source: scripts/mirror-nix-setup.sh
+        destination: /usr/libexec/mirror-os/mirror-nix-setup.sh
+      - source: systemd/system/mirror-nix-setup.service
+        destination: /usr/lib/systemd/system/mirror-nix-setup.service
+
+  # Make the first-boot scripts executable and enable their systemd services.
+  # Must run after the files module so the scripts and unit files are present.
+  - type: script
+    scripts:
+      - enable-services.sh
