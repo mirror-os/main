@@ -17,7 +17,8 @@
   # Let Home Manager manage itself so the `home-manager` CLI stays in PATH
   # and can apply future configuration updates.
   programs.home-manager.enable = true;
-
+  home.stateVersion = "24.11";
+  
   # ── Shell — Zsh ───────────────────────────────────────────────────────────
 programs.zsh = {
   enable = true;
