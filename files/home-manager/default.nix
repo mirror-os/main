@@ -7,10 +7,9 @@
 # Users can override anything declared here in their own home.nix — their
 # settings always win. Remove the import line entirely to fully detach.
 #
-# NOTE: This module requires the following flake inputs to be present in the
-# user's flake.nix: nix-flatpak (homeManagerModules.nix-flatpak) and
-# nixvim (homeManagerModules.nixvim). The scaffolded flake.nix includes
-# these automatically.
+# NOTE: This module requires the nix-flatpak flake input to be present in the
+# user's flake.nix (homeManagerModules.nix-flatpak). The scaffolded flake.nix
+# includes this automatically.
 
 { pkgs, lib, ... }:
 
@@ -33,29 +32,6 @@ programs.zsh = {
     plugins = [ "git" ];
   };
 };
-
-  # ── Editor — NixVim ───────────────────────────────────────────────────────
-  programs.nixvim = {
-    enable = true;
-
-    colorschemes.catppuccin = {
-      enable = true;
-      settings.flavour = "mocha";
-    };
-
-    plugins.lualine = {
-      enable = true;
-      settings.options.theme = "catppuccin";
-    };
-
-    opts = {
-      number = true;
-      relativenumber = true;
-      expandtab = true;
-      tabstop = 2;
-      shiftwidth = 2;
-    };
-  };
 
   # ── htop ─────────────────────────────────────────────────────────────────
   programs.htop = {

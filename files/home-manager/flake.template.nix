@@ -10,14 +10,9 @@
     };
 
     nix-flatpak.url = "github:gmodena/nix-flatpak/?ref=v0.5.1";
-
-    nixvim = {
-      url = "github:nix-community/nixvim";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-flatpak, nixvim, ... }:
+  outputs = { nixpkgs, home-manager, nix-flatpak, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -26,7 +21,6 @@
         inherit pkgs;
         modules = [
           nix-flatpak.homeManagerModules.nix-flatpak
-          nixvim.homeManagerModules.nixvim
           ./home.nix
         ];
       };
