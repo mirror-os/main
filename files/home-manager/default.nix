@@ -26,6 +26,7 @@ programs.zsh = {
   # Built-in Home Manager options — no manual plugin sourcing needed
   autosuggestion.enable = true;
   syntaxHighlighting.enable = true;
+  dotDir = config.home.homeDirectory;
 
   oh-my-zsh = {
     enable = true;
