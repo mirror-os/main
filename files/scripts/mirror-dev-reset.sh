@@ -55,10 +55,11 @@ cp /usr/share/mirror-os/home-manager/default.nix \
 
 # ── Step 9: Initialise git repo and configure identity ───────────────────────
 HM_DIR="$REAL_HOME/.config/home-manager"
-git -C "$HM_DIR" init
+git -C "$HM_DIR" init -b main
 git -C "$HM_DIR" config user.email "user@mirror-os.local"
 git -C "$HM_DIR" config user.name "Mirror OS User"
 git -C "$HM_DIR" add .
+git -C "$HM_DIR" commit -m "initial"
 
 # ── Step 10: Expire old Home Manager generations ──────────────────────────────
 echo "→ Expiring old Home Manager generations..."
@@ -72,7 +73,7 @@ nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER"
 
 # ── Step 12: Reset COSMIC DE settings ─────────────────────────────────────────
 echo "→ Resetting COSMIC DE settings..."
-rm -rf "$REAL_HOME/.config/cosmic"
+rm -rf "$REAL_HOME/.config/cosmic/" && echo "→ COSMIC settings cleared."
 
 # ── Step 13: Done ─────────────────────────────────────────────────────────────
 echo "Reset complete. Please log out and back in for COSMIC settings to take full effect."
