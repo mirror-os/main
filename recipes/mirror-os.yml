@@ -87,6 +87,17 @@ modules:
         destination: /usr/libexec/mirror-os/mirror-nix-setup.sh
       - source: systemd/system/mirror-nix-setup.service
         destination: /usr/lib/systemd/system/mirror-nix-setup.service
+      - source: firewalld/services/localsend.xml
+        destination: /etc/firewalld/services/localsend.xml
+
+  # Install LocalSend on first boot for all users via Flathub.
+  - type: default-flatpaks
+    notify: true
+    system:
+      repo-url: https://dl.flathub.org/repo/flathub.flatpakrepo
+      repo-name: flathub
+      install:
+        - org.localsend.localsend_app
 
   # Make the first-boot scripts executable and enable their systemd services.
   # Must run after the files module so the scripts and unit files are present.
