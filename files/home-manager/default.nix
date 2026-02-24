@@ -35,19 +35,16 @@ programs.zsh = {
   };
 };
 
-  # ── htop ─────────────────────────────────────────────────────────────────
-  programs.htop = {
-    enable = true;
-    settings = {
-      color_scheme = 5;          # Black Night — dark and readable
-      highlight_base_name = 1;
-      highlight_megabytes = 1;
-      highlight_threads = 1;
-      show_thread_names = 1;
-      tree_view = 1;
-      header_margin = 0;
-      show_cpu_frequency = 1;
-    };
+  # ── Packages ─────────────────────────────────────────────────────────────
+  home.packages = [
+    pkgs.htop
+  ];
+
+  # ── htop desktop entry (hidden from app menus) ────────────────────────────
+  xdg.desktopEntries."htop" = {
+    name = "htop";
+    exec = "htop";
+    noDisplay = true;
   };
 
   # ── Flatpaks via nix-flatpak ──────────────────────────────────────────────
