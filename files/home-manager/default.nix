@@ -11,7 +11,7 @@
 # user's flake.nix (homeManagerModules.nix-flatpak). The scaffolded flake.nix
 # includes this automatically.
 
-{ pkgs, lib, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   # Let Home Manager manage itself so the `home-manager` CLI stays in PATH
