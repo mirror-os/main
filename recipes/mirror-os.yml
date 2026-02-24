@@ -70,11 +70,8 @@ modules:
       - cups
       - distrobox
       - dpkg
-      - fontconfig
-      - google-noto-sans-fonts
       - hplip
-      - inter-fonts
-      - liberation-fonts
+      - rsms-inter-fonts
       - system-config-printer
 
   # Copy configuration files, first-boot scripts, and Home Manager defaults
