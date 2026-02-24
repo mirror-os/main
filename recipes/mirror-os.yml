@@ -73,7 +73,10 @@ modules:
       - dpkg
       - fontconfig
       - freetype
+      - google-noto-sans-fonts
       - hplip
+      - inter-fonts
+      - liberation-fonts
       - system-config-printer
 
   # Install Microsoft TrueType core fonts at image build time.
@@ -106,6 +109,8 @@ modules:
         destination: /etc/firewalld/services/localsend.xml
       - source: scripts/mirror-dev-reset.sh
         destination: /usr/bin/mirror-dev-reset
+      - source: fonts/99-mirror-os-defaults.conf
+        destination: /etc/fonts/conf.d/99-mirror-os-defaults.conf
 
   # Install LocalSend on first boot for all users via Flathub.
   - type: default-flatpaks@v1
