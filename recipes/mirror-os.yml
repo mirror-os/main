@@ -62,14 +62,25 @@ modules:
       - gstreamer1-plugin-libav
 
   # Install system utilities baked into the image layer so they are available
-  # before Nix is ready. Includes distrobox for containerized Linux environments
-  # and the CUPS printing stack with HP driver support.
+  # before Nix is ready. Includes distrobox for containerized Linux environments,
+  # the CUPS printing stack with HP driver support, font rendering libraries,
+  # and tools needed for the installer handler (dpkg) and MS fonts script (cabextract).
   - type: rpm-ostree
     install:
+      - cabextract
       - cups
       - distrobox
+      - dpkg
+      - fontconfig
+      - freetype
       - hplip
       - system-config-printer
+
+  # Install Microsoft TrueType core fonts at image build time.
+  # cabextract (installed above) is a runtime dependency of the installer.
+  - type: script
+    scripts:
+      - install-ms-fonts.sh
 
   # Copy configuration files, first-boot scripts, and Home Manager defaults
   # into the image. Source paths are relative to the repository's files/ directory.
