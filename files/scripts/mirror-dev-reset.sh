@@ -71,9 +71,30 @@ export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 cd "$HM_DIR"
 nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER"
 
-# ── Step 12: Reset COSMIC DE settings ─────────────────────────────────────────
+# ── Step 12: Reset Flatpaks to image defaults ─────────────────────────────────
+echo "→ Resetting Flatpaks to image defaults..."
+BLESSED=$(cat /usr/share/mirror-os/default-flatpaks.list)
+INSTALLED=$(flatpak list --system --app --columns=application 2>/dev/null || true)
+
+# Remove any system Flatpaks not in the blessed list
+while IFS= read -r app; do
+  if [ -n "$app" ] && ! echo "$BLESSED" | grep -qx "$app"; then
+    echo "  → Removing unlisted Flatpak: $app"
+    flatpak uninstall --system --noninteractive "$app" || true
+  fi
+done <<< "$INSTALLED"
+
+# Reinstall any blessed defaults the user may have removed
+while IFS= read -r app; do
+  if [ -n "$app" ] && ! echo "$INSTALLED" | grep -qx "$app"; then
+    echo "  → Reinstalling missing default: $app"
+    flatpak install --system --noninteractive flathub "$app" || true
+  fi
+done <<< "$BLESSED"
+
+# ── Step 13: Reset COSMIC DE settings ─────────────────────────────────────────
 echo "→ Resetting COSMIC DE settings..."
 rm -rf "$REAL_HOME/.config/cosmic/" && echo "→ COSMIC settings cleared."
 
-# ── Step 13: Done ─────────────────────────────────────────────────────────────
+# ── Step 14: Done ─────────────────────────────────────────────────────────────
 echo "Reset complete. Please log out and back in for COSMIC settings to take full effect."
