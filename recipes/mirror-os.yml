@@ -61,11 +61,15 @@ modules:
       - gstreamer1-plugins-ugly
       - gstreamer1-plugin-libav
 
-  # Install distrobox for containerized Linux environments with full desktop
-  # integration. Baked into the image layer so it is available before Nix is ready.
+  # Install system utilities baked into the image layer so they are available
+  # before Nix is ready. Includes distrobox for containerized Linux environments
+  # and the CUPS printing stack with HP driver support.
   - type: rpm-ostree
     install:
+      - cups
       - distrobox
+      - hplip
+      - system-config-printer
 
   # Copy configuration files, first-boot scripts, and Home Manager defaults
   # into the image. Source paths are relative to the repository's files/ directory.
