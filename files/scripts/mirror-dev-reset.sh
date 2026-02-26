@@ -70,6 +70,10 @@ export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 cd "$HM_DIR"
 nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER"
 
+echo "→ Restarting Flatpak install service..."
+systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
+systemctl --user start flatpak-managed-install.service 2>/dev/null || true
+
 # ── Step 12: Reset Flatpaks to image defaults ─────────────────────────────────
 echo "→ Resetting Flatpaks to image defaults..."
 BLESSED=$(cat /usr/share/mirror-os/default-flatpaks.list)
