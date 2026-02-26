@@ -118,17 +118,19 @@ modules:
   # Register Flatpak remotes on first boot for all users.
   # No app installs here — all Flatpaks are managed declaratively via nix-flatpak in Home Manager.
   - type: default-flatpaks
-    notify: true
     configurations:
       - scope: system
+        notify: true
         repo:
           url: https://dl.flathub.org/repo/flathub.flatpakrepo
           name: flathub
       - scope: system
+        notify: false
         repo:
           url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
           name: cosmic
       - scope: system
+        notify: false
         repo:
           url: https://distribute.kde.org/kdeapps.flatpakrepo
           name: kde
