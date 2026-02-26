@@ -125,7 +125,6 @@ modules:
         - io.github.dvlv.boxbuddyrs
         - org.kde.haruna
         - org.gnome.Loupe
-        - org.gnome.Evince
         - com.github.k4zmu2a.spacecadetpinball
 
   # Make the first-boot scripts executable and enable their systemd services.
