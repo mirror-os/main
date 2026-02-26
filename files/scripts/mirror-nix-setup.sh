@@ -97,16 +97,4 @@ ZSH_PATH=$(sudo -u "$REAL_USER" bash -c "
 # ── Write stamp ───────────────────────────────────────────────────────────────
 mkdir -p /var/lib/mirror-os
 touch "$STAMP"
-
-# ── Hide Nix build users from AccountsService ─────────────────────────────
-log "Hiding Nix build users from AccountsService..."
-for i in $(seq 1 32); do
-  user="nixbld$i"
-  accounts_file="/var/lib/AccountsService/users/$user"
-  mkdir -p /var/lib/AccountsService/users
-  if [[ ! -f "$accounts_file" ]]; then
-    printf '[User]\nSystemAccount=true\n' > "$accounts_file"
-  fi
-done
-
 log "Done."
