@@ -111,20 +111,23 @@ modules:
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
 
-  # Add flatpak remotes on first boot for all users via Flathub.
-  - type: default-flatpaks@v1
+  # Register Flatpak remotes on first boot for all users.
+  # No app installs here — all Flatpaks are managed declaratively via nix-flatpak in Home Manager.
+  - type: default-flatpaks
     notify: true
-    system:
-      repo-url: https://dl.flathub.org/repo/flathub.flatpakrepo
-      repo-name: flathub
-
-    additional-system-repos:
-      - repo-url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
-        repo-name: cosmic
-
-    additional-system-repos:
-      - repo-url: https://distribute.kde.org/kdeapps.flatpakrepo   
-        repo-name: kde
+    configurations:
+      - scope: system
+        repo:
+          url: https://dl.flathub.org/repo/flathub.flatpakrepo
+          name: flathub
+      - scope: system
+        repo:
+          url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
+          name: cosmic
+      - scope: system
+        repo:
+          url: https://distribute.kde.org/kdeapps.flatpakrepo
+          name: kde
 
   # Make the first-boot scripts executable and enable their systemd services.
   # Must run after the files module so the scripts and unit files are present.
