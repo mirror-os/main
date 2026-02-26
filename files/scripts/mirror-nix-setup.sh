@@ -87,18 +87,26 @@ sudo -u "$REAL_USER" bash -c "
   nix run 'github:nix-community/home-manager' -- switch --flake '.#$REAL_USER'
 "
 
+# ── Set zsh as the default shell ─────────────────────────────────────────────
+ZSH_PATH=$(sudo -u "$REAL_USER" bash -c "
+  source '$NIX_PROFILE'
+  export PATH=\"\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH\"
+  which zsh
+" 2>/dev/null || true)
+
 # ── Write stamp ───────────────────────────────────────────────────────────────
 mkdir -p /var/lib/mirror-os
+touch "$STAMP"
+
 # ── Hide Nix build users from AccountsService ─────────────────────────────
 log "Hiding Nix build users from AccountsService..."
-mkdir -p /var/lib/AccountsService/users
 for i in $(seq 1 32); do
   user="nixbld$i"
   accounts_file="/var/lib/AccountsService/users/$user"
+  mkdir -p /var/lib/AccountsService/users
   if [[ ! -f "$accounts_file" ]]; then
     printf '[User]\nSystemAccount=true\n' > "$accounts_file"
   fi
 done
-touch "$STAMP"
 
 log "Done."
