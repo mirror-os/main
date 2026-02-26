@@ -73,12 +73,6 @@ nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER" || 
   echo "→ Home Manager switch completed with warnings (flatpak timeout is expected on first run)."
 }
 
-echo "→ Restarting Flatpak install service..."
-systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
-systemctl --user start flatpak-managed-install.service 2>/dev/null || true
-echo "→ Flatpaks are installing in the background. Check progress with:"
-echo "   journalctl --user -u flatpak-managed-install.service -f"
-
 # ── Step 12: Reset user Flatpaks ──────────────────────────────────────────────
 echo "→ Resetting user Flatpaks..."
 echo "  → Removing all user-installed Flatpaks..."
@@ -88,11 +82,15 @@ flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r
     flatpak uninstall --user --noninteractive "$app" || true
   fi
 done
-echo "  → Flatpaks will be reinstalled on next login via Home Manager."
+echo "  → Restarting Flatpak install service to reinstall defaults..."
+systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
+systemctl --user start flatpak-managed-install.service 2>/dev/null || true
+echo "  → Flatpaks are installing in the background. Check progress with:"
+echo "     journalctl --user -u flatpak-managed-install.service -f"
 
 # ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
 echo "→ Resetting COSMIC desktop settings..."
-rm -rf "$REAL_HOME/.config/cosmic"
+sudo rm -rf "$REAL_HOME/.config/cosmic"
 echo "  → COSMIC config cleared. Desktop will return to defaults on next login."
 
 # ── Step 14: Done ─────────────────────────────────────────────────────────────
