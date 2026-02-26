@@ -23,21 +23,38 @@
   };
   home.stateVersion = "24.11";
   
-  # ── Shell — Zsh ───────────────────────────────────────────────────────────
-programs.zsh = {
-  enable = true;
-
-  # Built-in Home Manager options — no manual plugin sourcing needed
-  autosuggestion.enable = true;
-  syntaxHighlighting.enable = true;
-  dotDir = config.home.homeDirectory;
-
-  oh-my-zsh = {
+  # ── Prompt — Starship ─────────────────────────────────────────────────────
+  programs.starship = {
     enable = true;
-    theme = "robbyrussell";
-    plugins = [ "git" ];
+    enableZshIntegration = true;
+    settings = {
+      format = "$directory$git_branch$git_status$nix_shell$cmd_duration$line_break$character";
+      character = {
+        success_symbol = "[❯](bold green)";
+        error_symbol = "[❯](bold red)";
+      };
+      directory = {
+        truncation_length = 3;
+        truncate_to_repo = true;
+        style = "bold blue";
+      };
+      git_branch = {
+        symbol = " ";
+        style = "bold purple";
+      };
+      git_status = {
+        style = "bold red";
+      };
+      nix_shell = {
+        symbol = " ";
+        style = "bold cyan";
+      };
+      cmd_duration = {
+        min_time = 2000;
+        style = "bold yellow";
+      };
+    };
   };
-};
 
   # ── Packages ─────────────────────────────────────────────────────────────
   home.packages = [

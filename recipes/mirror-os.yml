@@ -73,6 +73,9 @@ modules:
       - hplip
       - rsms-inter-fonts
       - system-config-printer
+      - zsh
+      - zsh-autosuggestions
+      - zsh-syntax-highlighting
 
   # Remove Firefox shipped in the base image; it is replaced by a Flatpak.
   - type: rpm-ostree
@@ -134,4 +137,5 @@ modules:
   # Must run after the files module so the scripts and unit files are present.
   - type: script
     scripts:
+      - setup-zsh.sh
       - enable-services.sh
