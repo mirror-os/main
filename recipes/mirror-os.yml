@@ -128,6 +128,9 @@ modules:
         - org.kde.haruna
         - org.gnome.Loupe
         - com.github.k4zmu2a.spacecadetpinball
+    additional-system-repos:
+      - repo-url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
+        repo-name: cosmic
 
   # Make the first-boot scripts executable and enable their systemd services.
   # Must run after the files module so the scripts and unit files are present.

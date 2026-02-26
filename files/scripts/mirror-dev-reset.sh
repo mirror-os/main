@@ -68,6 +68,7 @@ home-manager expire-generations "-0 days" || true
 echo "→ Re-applying fresh Home Manager config..."
 export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 cd "$HM_DIR"
+systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
 nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER"
 
 echo "→ Restarting Flatpak install service..."
@@ -91,7 +92,7 @@ done <<< "$INSTALLED"
 while IFS= read -r app; do
   if [ -n "$app" ] && ! echo "$INSTALLED" | grep -qx "$app"; then
     echo "  → Reinstalling missing default: $app"
-    flatpak install --system --noninteractive flathub "$app" || true
+    flatpak install --system --noninteractive "$app" || true
   fi
 done <<< "$BLESSED"
 
