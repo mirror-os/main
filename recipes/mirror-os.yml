@@ -111,32 +111,20 @@ modules:
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
 
-  # Install LocalSend on first boot for all users via Flathub.
+  # Add flatpak remotes on first boot for all users via Flathub.
   - type: default-flatpaks@v1
     notify: true
     system:
       repo-url: https://dl.flathub.org/repo/flathub.flatpakrepo
       repo-name: flathub
-      install:
-        - org.localsend.localsend_app
-        - app.zen_browser.zen
-        - org.onlyoffice.desktopeditors
-        - org.gnome.Calendar
-        - org.gnome.Geary
-        - it.mijorus.gearlever
-        - io.github.dvlv.boxbuddyrs
-        - org.kde.haruna
-        - org.gnome.Loupe
-        - com.github.k4zmu2a.spacecadetpinball
-        - com.usebottles.bottles
-        - com.github.tchx84.Flatseal
-        - org.gnome.Mahjongg
-        - org.gnome.Aisleriot
-        - org.gnome.Sudoku
-        - org.gnome.TwentyFortyEight
+
     additional-system-repos:
       - repo-url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
         repo-name: cosmic
+
+    additional-system-repos:
+      - repo-url: https://distribute.kde.org/kdeapps.flatpakrepo   
+        repo-name: kde
 
   # Make the first-boot scripts executable and enable their systemd services.
   # Must run after the files module so the scripts and unit files are present.
