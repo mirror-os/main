@@ -11,12 +11,19 @@
 # user's flake.nix (homeManagerModules.nix-flatpak). The scaffolded flake.nix
 # includes this automatically.
 
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, cosmicLib, ... }:
 
 {
   # Let Home Manager manage itself so the `home-manager` CLI stays in PATH
   # and can apply future configuration updates.
   programs.home-manager.enable = true;
+
+  wayland.desktopManager.cosmic = {
+    enable = true;
+    theme = {
+      appearance = cosmicLib.cosmic.mkRON "enum" "System";
+    };
+  };
   home.stateVersion = "24.11";
   
   # ── Shell — Zsh ───────────────────────────────────────────────────────────

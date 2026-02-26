@@ -14,7 +14,6 @@ echo "This will reset your Mirror OS installation to first-boot state."
 echo ""
 echo "The following will be DELETED:"
 echo "  - All Home Manager config and generations"
-echo "  - COSMIC desktop environment settings"
 echo ""
 echo "Press Ctrl+C to cancel, or Enter to continue..."
 read -r
@@ -101,9 +100,5 @@ flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r
   fi
 done
 
-# ── Step 13: Reset COSMIC DE settings ─────────────────────────────────────────
-echo "→ Resetting COSMIC DE settings..."
-rm -rf "$REAL_HOME/.config/cosmic/" && echo "→ COSMIC settings cleared."
-
-# ── Step 14: Done ─────────────────────────────────────────────────────────────
-echo "Reset complete. Please log out and back in for COSMIC settings to take full effect."
+# ── Step 13: Done ─────────────────────────────────────────────────────────────
+echo "Reset complete. Please log out and back in for all changes to take effect."
