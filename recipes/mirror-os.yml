@@ -127,11 +127,6 @@ modules:
       - scope: system
         notify: false
         repo:
-          url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
-          name: cosmic
-      - scope: system
-        notify: false
-        repo:
           url: https://distribute.kde.org/kdeapps.flatpakrepo
           name: kde
 
