@@ -56,6 +56,7 @@ programs.zsh = {
     enable = true;
     remotes = [
       { name = "flathub"; location = "https://dl.flathub.org/repo/flathub.flatpakrepo"; }
+      { name = "kde"; location = "https://distribute.kde.org/kdeapps.flatpakrepo"; }
     ];
     packages = [
       { appId = "app.zen_browser.zen"; origin = "flathub"; }
