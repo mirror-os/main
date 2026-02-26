@@ -75,28 +75,8 @@ echo "→ Restarting Flatpak install service..."
 systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
 systemctl --user start flatpak-managed-install.service 2>/dev/null || true
 
-# ── Step 12: Reset Flatpaks to image defaults ─────────────────────────────────
-echo "→ Resetting Flatpaks to image defaults..."
-BLESSED=$(cat /usr/share/mirror-os/default-flatpaks.list)
-INSTALLED=$(flatpak list --system --app --columns=application 2>/dev/null || true)
-
-# Remove any system Flatpaks not in the blessed list
-while IFS= read -r app; do
-  if [ -n "$app" ] && ! echo "$BLESSED" | grep -qx "$app"; then
-    echo "  → Removing unlisted Flatpak: $app"
-    flatpak uninstall --system --noninteractive "$app" || true
-  fi
-done <<< "$INSTALLED"
-
-# Reinstall any blessed defaults the user may have removed
-while IFS= read -r app; do
-  if [ -n "$app" ] && ! echo "$INSTALLED" | grep -qx "$app"; then
-    echo "  → Reinstalling missing default: $app"
-    flatpak install --system --noninteractive "$app" || true
-  fi
-done <<< "$BLESSED"
-
-# Remove all user-installed Flatpaks
+# ── Step 12: Reset user Flatpaks ──────────────────────────────────────────────
+echo "→ Resetting user Flatpaks..."
 echo "  → Removing all user-installed Flatpaks..."
 flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r app; do
   if [ -n "$app" ]; then
@@ -104,6 +84,7 @@ flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r
     flatpak uninstall --user --noninteractive "$app" || true
   fi
 done
+echo "  → Flatpaks will be reinstalled on next login via Home Manager."
 
 # ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
 echo "→ Resetting COSMIC desktop settings..."
