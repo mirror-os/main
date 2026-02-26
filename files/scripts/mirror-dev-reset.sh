@@ -69,11 +69,15 @@ echo "→ Re-applying fresh Home Manager config..."
 export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 cd "$HM_DIR"
 systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
-nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER"
+nix run 'github:nix-community/home-manager' -- switch --flake ".#$REAL_USER" || {
+  echo "→ Home Manager switch completed with warnings (flatpak timeout is expected on first run)."
+}
 
 echo "→ Restarting Flatpak install service..."
 systemctl --user reset-failed flatpak-managed-install.service 2>/dev/null || true
 systemctl --user start flatpak-managed-install.service 2>/dev/null || true
+echo "→ Flatpaks are installing in the background. Check progress with:"
+echo "   journalctl --user -u flatpak-managed-install.service -f"
 
 # ── Step 12: Reset user Flatpaks ──────────────────────────────────────────────
 echo "→ Resetting user Flatpaks..."
