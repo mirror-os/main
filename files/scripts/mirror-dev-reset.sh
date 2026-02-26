@@ -100,5 +100,10 @@ flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r
   fi
 done
 
-# ── Step 13: Done ─────────────────────────────────────────────────────────────
-echo "Reset complete. Please log out and back in for all changes to take effect."
+# ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
+echo "→ Resetting COSMIC desktop settings..."
+rm -rf "$REAL_HOME/.config/cosmic"
+echo "  → COSMIC config cleared. Desktop will return to defaults on next login."
+
+# ── Step 14: Done ─────────────────────────────────────────────────────────────
+echo "Reset complete. Please log out or reboot for COSMIC settings to take effect."
