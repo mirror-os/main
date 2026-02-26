@@ -92,6 +92,15 @@ while IFS= read -r app; do
   fi
 done <<< "$BLESSED"
 
+# Remove all user-installed Flatpaks
+echo "  → Removing all user-installed Flatpaks..."
+flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r app; do
+  if [ -n "$app" ]; then
+    echo "    → Removing user Flatpak: $app"
+    flatpak uninstall --user --noninteractive "$app" || true
+  fi
+done
+
 # ── Step 13: Reset COSMIC DE settings ─────────────────────────────────────────
 echo "→ Resetting COSMIC DE settings..."
 rm -rf "$REAL_HOME/.config/cosmic/" && echo "→ COSMIC settings cleared."
