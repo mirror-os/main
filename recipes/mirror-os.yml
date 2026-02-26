@@ -108,6 +108,8 @@ modules:
         destination: /etc/fonts/conf.d/99-mirror-os-defaults.conf
       - source: flatpaks/default-flatpaks.list
         destination: /usr/share/mirror-os/default-flatpaks.list
+      - source: usr/share/cosmic/
+        destination: /usr/share/cosmic/
 
   # Install LocalSend on first boot for all users via Flathub.
   - type: default-flatpaks@v1

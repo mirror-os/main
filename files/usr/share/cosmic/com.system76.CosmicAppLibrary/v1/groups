@@ -1,0 +1,47 @@
+[
+    (
+        name: "Games",
+        icon: "folder-symbolic",
+        filter: AppIds([
+            "com.github.k4zmu2a.spacecadetpinball",
+        ]),
+    ),
+    (
+        name: "Office",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["Office"],
+            exclude: [],
+            include: [
+                "org.onlyoffice.desktopeditors",
+            ],
+        ),
+    ),
+    (
+        name: "Internet",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["Network"],
+            exclude: [],
+            include: [],
+        ),
+    ),
+    (
+        name: "Media",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["AudioVideo", "Audio", "Video"],
+            exclude: [],
+            include: [],
+        ),
+    ),
+    (
+        name: "System",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["System", "Settings"],
+            exclude: [],
+            include: [],
+        ),
+    ),
+]
