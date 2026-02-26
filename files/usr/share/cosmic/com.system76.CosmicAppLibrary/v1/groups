@@ -52,7 +52,7 @@
             categories: ["System", "TerminalEmulator", "PackageManager", "FileManager", "TextEditor", "Archiving"],
             exclude: [
                 "com.system76.CosmicFiles",
-                "com.system76.CosmicStore"
+                "com.system76.CosmicStore",
                 "com.system76.CosmicSettings",
             ],
             include: [
