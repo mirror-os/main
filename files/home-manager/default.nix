@@ -56,7 +56,6 @@ programs.zsh = {
     enable = true;
     remotes = [
       { name = "flathub"; location = "https://dl.flathub.org/repo/flathub.flatpakrepo"; }
-      { name = "cosmic"; location = "https://apt.pop-os.org/cosmic/cosmic.flatpakrepo"; }
     ];
     packages = [
       { appId = "app.zen_browser.zen"; origin = "flathub"; }
@@ -75,7 +74,7 @@ programs.zsh = {
       { appId = "org.gnome.Aisleriot"; origin = "flathub"; }
       { appId = "org.gnome.Sudoku"; origin = "flathub"; }
       { appId = "org.gnome.TwentyFortyEight"; origin = "flathub"; }
-      { appId = "dev.edfloreshz.Calculator"; origin = "cosmic"; }
+      { appId = "org.gnome.Calculator"; origin = "flathub"; }
       { appId = "org.kde.kdeconnect"; origin = "kde"; }
     ];
 

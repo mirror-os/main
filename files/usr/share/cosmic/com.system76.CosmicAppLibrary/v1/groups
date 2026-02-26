@@ -7,7 +7,7 @@
             exclude: [],
             include: [
                 "org.onlyoffice.desktopeditors",
-                "dev.edfloreshz.Calculator",
+                "org.gnome.Calculator",
             ],
         ),
     ),
