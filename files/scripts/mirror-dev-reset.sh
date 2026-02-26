@@ -90,7 +90,8 @@ echo "     journalctl --user -u flatpak-managed-install.service -f"
 
 # ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
 echo "→ Resetting COSMIC desktop settings..."
-sudo rm -rf "$REAL_HOME/.config/cosmic"
+sudo chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/.config/cosmic" 2>/dev/null || true
+rm -rf "$REAL_HOME/.config/cosmic"
 echo "  → COSMIC config cleared. Desktop will return to defaults on next login."
 
 # ── Step 14: Done ─────────────────────────────────────────────────────────────
