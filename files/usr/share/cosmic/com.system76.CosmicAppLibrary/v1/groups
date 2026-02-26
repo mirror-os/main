@@ -21,6 +21,7 @@
             ],
             include: [
                 "org.localsend.localsend_app",
+                "org.kde.kdeconnect"
             ],
         ),
     ),
