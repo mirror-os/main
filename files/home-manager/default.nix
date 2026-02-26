@@ -78,7 +78,6 @@ programs.zsh = {
       { appId = "dev.edfloreshz.Calculator"; origin = "cosmic"; }
       { appId = "org.kde.kdeconnect"; origin = "kde"; }
     ];
-  };
 
     overrides.global = {
       # Force consistent GTK theme and icons across all Flatpak apps
