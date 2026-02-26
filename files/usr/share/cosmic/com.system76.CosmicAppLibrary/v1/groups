@@ -1,10 +1,37 @@
 [
     (
+        name: "Internet",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["Network", "WebBrowser", "Email"],
+            exclude: [],
+            include: [
+                "app.zen_browser.zen",
+                "org.localsend.localsend_app",
+            ],
+        ),
+    ),
+    (
         name: "Games",
         icon: "folder-symbolic",
-        filter: AppIds([
-            "com.github.k4zmu2a.spacecadetpinball",
-        ]),
+        filter: Categories(
+            categories: ["Game"],
+            exclude: [],
+            include: [
+                "com.github.k4zmu2a.spacecadetpinball",
+            ],
+        ),
+    ),
+    (
+        name: "Media",
+        icon: "folder-symbolic",
+        filter: Categories(
+            categories: ["AudioVideo", "Audio", "Video", "Graphics", "2DGraphics"],
+            exclude: [],
+            include: [
+                "org.kde.haruna",
+            ],
+        ),
     ),
     (
         name: "Office",
@@ -18,30 +45,18 @@
         ),
     ),
     (
-        name: "Internet",
-        icon: "folder-symbolic",
-        filter: Categories(
-            categories: ["Network"],
-            exclude: [],
-            include: [],
-        ),
-    ),
-    (
-        name: "Media",
-        icon: "folder-symbolic",
-        filter: Categories(
-            categories: ["AudioVideo", "Audio", "Video"],
-            exclude: [],
-            include: [],
-        ),
-    ),
-    (
         name: "System",
         icon: "folder-symbolic",
         filter: Categories(
-            categories: ["System", "Settings"],
+            categories: ["System", "TerminalEmulator", "PackageManager", "FileManager", "TextEditor", "Archiving"],
             exclude: [],
-            include: [],
+            include: [
+                "com.system76.CosmicSettings",
+                "com.system76.CosmicScreenshot",
+                "org.gnome.DiskUtility",
+                "io.github.dvlv.boxbuddyrs",
+                "it.mijorus.gearlever",
+            ],
         ),
     ),
 ]
