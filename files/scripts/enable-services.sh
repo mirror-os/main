@@ -11,5 +11,4 @@ systemctl enable mirror-nix-setup.service
 
 firewall-offline-cmd --add-service=localsend
 
-# enable the user service globally (applies to all current and future users).
-bashsystemctl enable --global mirror-user-setup.service
+systemctl enable --global mirror-user-setup.service
