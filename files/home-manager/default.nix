@@ -57,7 +57,7 @@ programs.zsh = {
 
     packages = [
       # AppImage manager — handles .AppImage files with launcher integration
-      { appId = "it.mijoras.GearLever"; origin = "flathub"; }
+      { appId = "it.mijorus.gearlever"; origin = "flathub"; }
     ];
 
     overrides.global = {
