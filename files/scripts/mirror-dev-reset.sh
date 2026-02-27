@@ -59,6 +59,12 @@ home-manager expire-generations "-0 days" || true
 # ── Step 11: Re-apply fresh Home Manager config ───────────────────────────────
 echo "→ Re-applying fresh Home Manager config..."
 export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
+
+# Remove standalone home-manager if present — it conflicts with the
+# home-manager-managed version that home-manager switch installs itself.
+nix profile remove home-manager 2>/dev/null && \
+  echo "  → Removed standalone home-manager from nix profile" || true
+
 cd "$HM_DEST"
 nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" || {
   echo "→ Home Manager switch completed with warnings (check output above)."
@@ -80,8 +86,17 @@ rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
 
 echo "→ Reinstalling blessed apps via mirror-sync..."
 systemctl --user start mirror-os-sync.service 2>/dev/null || true
-echo "  → Blessed apps are installing in the background. Check progress with:"
-echo "     journalctl --user -u mirror-os-sync.service -f"
+echo "  → Blessed apps are installing in the background."
+WATCH_CMD="journalctl --user -u mirror-os-sync.service -f"
+if command -v cosmic-term &>/dev/null; then
+  cosmic-term -- sh -c "$WATCH_CMD" &
+elif command -v gnome-terminal &>/dev/null; then
+  gnome-terminal -- sh -c "$WATCH_CMD" &
+elif command -v xterm &>/dev/null; then
+  xterm -e sh -c "$WATCH_CMD" &
+else
+  echo "  → Check progress with: $WATCH_CMD"
+fi
 
 # ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
 echo "→ Resetting COSMIC desktop settings..."
