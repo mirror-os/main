@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Mirror OS First-Boot Initializer
+# Installs Nix, scaffolds Home Manager, installs blessed apps, initialises state git repo.
+
+set -uo pipefail
+
+LOG="/var/home/$USER/.local/share/mirror-os/init.log"
+DONE_MARKER="/var/home/$USER/.local/share/mirror-os/.init-complete"
+NIX_INSTALLER_URL="https://install.determinate.systems/nix"
+HM_CONFIG_DIR="/var/home/$USER/.config/home-manager"
+STATE_DIR="/var/home/$USER/.local/share/mirror-os/state"
+TEMPLATES_DIR="/usr/share/mirror-os"
+BLESSED_APPS="/usr/share/mirror-os/blessed-apps.list"
+EXCLUDED_APPS="/var/home/$USER/.config/mirror-os/excluded-apps.list"
+
+mkdir -p "$(dirname "$LOG")" "$STATE_DIR" "/var/home/$USER/.config/mirror-os"
+touch "$EXCLUDED_APPS"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+}
+
+die() {
+    log "ERROR: $*"
+    exit 1
+}
+
+log "=== Mirror OS Init starting (user: $USER) ==="
+
+# ── Step 1: Guard — already done ───────────────────────────────────────────
+if [ -f "$DONE_MARKER" ]; then
+    log "Init already completed. Exiting."
+    exit 0
+fi
+
+# ── Step 2: Install Nix if missing ─────────────────────────────────────────
+if ! command -v nix &>/dev/null; then
+    log "Installing Nix (Determinate Systems)..."
+    curl --proto '=https' --tlsv1.2 -sSf -L "$NIX_INSTALLER_URL" \
+        | sh -s -- install \
+            --no-confirm \
+            --extra-conf "experimental-features = nix-command flakes" \
+        >> "$LOG" 2>&1 || die "Nix installation failed"
+
+    # shellcheck disable=SC1091
+    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    log "Nix installed successfully"
+else
+    log "Nix already installed"
+    export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
+fi
+
+# Wait for nix daemon
+for i in $(seq 1 30); do
+    nix store info &>/dev/null && break
+    log "Waiting for nix daemon... ($i/30)"
+    sleep 2
+done
+nix store info &>/dev/null || die "Nix daemon not responding after 60s"
+
+# ── Step 3: Scaffold home-manager config ───────────────────────────────────
+if [ ! -d "$HM_CONFIG_DIR" ]; then
+    log "Scaffolding home-manager config..."
+    mkdir -p "$HM_CONFIG_DIR"
+
+    for template in flake.nix home.nix home-mirror-apps.nix home-user.nix; do
+        sed "s/__USERNAME__/$USER/g" \
+            "$TEMPLATES_DIR/${template}.template" \
+            > "$HM_CONFIG_DIR/$template"
+    done
+
+    log "home-manager config scaffolded at $HM_CONFIG_DIR"
+else
+    log "home-manager config already exists, skipping scaffold"
+fi
+
+# ── Step 4: Initialise state git repo ──────────────────────────────────────
+if [ ! -d "$STATE_DIR/.git" ]; then
+    log "Initialising state git repository..."
+    git -C "$STATE_DIR" init -q
+    git -C "$STATE_DIR" config user.name "Mirror OS"
+    git -C "$STATE_DIR" config user.email "mirror-os@localhost"
+fi
+
+# ── Step 5: Install home-manager ───────────────────────────────────────────
+if ! command -v home-manager &>/dev/null; then
+    log "Installing home-manager..."
+    nix profile install "nixpkgs#home-manager" >> "$LOG" 2>&1 || \
+        die "home-manager installation failed"
+    log "home-manager installed"
+fi
+
+# ── Step 6: Install blessed apps (minus excluded) ──────────────────────────
+log "Installing blessed apps..."
+INSTALLED_APPS=()
+SKIPPED_APPS=()
+
+if [ -f "$BLESSED_APPS" ]; then
+    while IFS= read -r app; do
+        [ -z "$app" ] || [[ "$app" == \#* ]] && continue
+
+        if grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
+            log "  SKIP (excluded): $app"
+            SKIPPED_APPS+=("$app")
+            continue
+        fi
+
+        if flatpak list --app --columns=application 2>/dev/null | grep -qx "$app"; then
+            log "  SKIP (already installed): $app"
+            continue
+        fi
+
+        log "  Installing: $app"
+        if flatpak install -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
+            INSTALLED_APPS+=("$app")
+        else
+            log "  WARNING: Failed to install $app (will retry on next sync)"
+        fi
+    done < "$BLESSED_APPS"
+fi
+
+log "Blessed apps: ${#INSTALLED_APPS[@]} installed, ${#SKIPPED_APPS[@]} skipped (excluded)"
+
+# ── Step 7: Write initial home-mirror-apps.nix ─────────────────────────────
+log "Writing initial home-mirror-apps.nix..."
+CURRENT_FLATPAKS=$(flatpak list --app --columns=application 2>/dev/null | sort)
+MANAGED_APPS=""
+while IFS= read -r app; do
+    [ -z "$app" ] && continue
+    if grep -qx "$app" "$BLESSED_APPS" 2>/dev/null; then
+        MANAGED_APPS="${MANAGED_APPS}    \"${app}\"\n"
+    fi
+done <<< "$CURRENT_FLATPAKS"
+
+cat > "$HM_CONFIG_DIR/home-mirror-apps.nix" << EOF
+# AUTO-MANAGED by Mirror OS — do not edit manually
+# Maintained by mirror-sync. Your changes will be overwritten.
+# To customize apps, edit home-user.nix instead.
+{ ... }:
+
+{
+  services.flatpak.packages = [
+$(echo -e "$MANAGED_APPS")  ];
+}
+EOF
+
+# ── Step 8: First home-manager switch ──────────────────────────────────────
+log "Running home-manager switch (first run may take a while)..."
+cd "$HM_CONFIG_DIR"
+
+if home-manager switch --flake ".#$USER" >> "$LOG" 2>&1; then
+    log "home-manager switch succeeded"
+elif home-manager switch >> "$LOG" 2>&1; then
+    log "home-manager switch succeeded (legacy mode)"
+else
+    log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
+fi
+
+# ── Step 9: Initial git commit ─────────────────────────────────────────────
+mkdir -p "$STATE_DIR/home-manager"
+cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
+flatpak list --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"
+echo "$CURRENT_FLATPAKS" > "$STATE_DIR/flatpak-apps.list"
+cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
+
+git -C "$STATE_DIR" add -A
+git -C "$STATE_DIR" commit -m "init: Mirror OS first boot $(date '+%Y-%m-%d %H:%M:%S')" \
+    >> "$LOG" 2>&1 || true
+
+# ── Done ───────────────────────────────────────────────────────────────────
+touch "$DONE_MARKER"
+log "=== Mirror OS Init complete ==="
