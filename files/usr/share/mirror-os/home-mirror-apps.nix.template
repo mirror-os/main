@@ -1,0 +1,11 @@
+# AUTO-MANAGED by Mirror OS — do not edit manually
+# This file is maintained by mirror-sync. Your changes will be overwritten.
+# To customize apps, edit home-user.nix instead.
+{ ... }:
+
+{
+  services.flatpak.packages = [
+    # Populated automatically on first boot
+    # Maintained by mirror-sync thereafter
+  ];
+}

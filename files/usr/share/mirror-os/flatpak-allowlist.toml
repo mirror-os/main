@@ -1,0 +1,151 @@
+# Mirror OS Flatpak App Settings Gitallow
+# Precedence (lowest to highest):
+#   1. default: deny everything
+#   2. [allow] patterns
+#   3. [deny] patterns  (beats allow)
+#   4. [[app]] overrides (beats everything)
+
+[allow]
+patterns = [
+    "**/config/**",
+    "**/settings/**",
+    "**/preferences/**",
+    "**/Settings/**",
+    "**/*.conf",
+    "**/*.ini",
+    "**/*.json",
+    "**/*.toml",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.xml",
+    "**/*.css",
+    "**/*.properties",
+    "**/bookmarks*",
+    "**/places.sqlite",
+]
+
+[deny]
+patterns = [
+    "**/cache/**",
+    "**/Cache/**",
+    "**/cache-v*/**",
+    "**/CacheStorage/**",
+    "**/Code Cache/**",
+    "**/GPUCache/**",
+    "**/DawnCache/**",
+    "**/ShaderCache/**",
+    "**/logs/**",
+    "**/Logs/**",
+    "**/log/**",
+    "**/crashreports/**",
+    "**/Crash Reports/**",
+    "**/minidumps/**",
+    "**/blob_storage/**",
+    "**/IndexedDB/**",
+    "**/Local Storage/**",
+    "**/Session Storage/**",
+    "**/Service Worker/**",
+    "**/thumbnails/**",
+    "**/Thumbnails/**",
+    "**/.org.chromium.Chromium/**",
+    "**/*.db-wal",
+    "**/*.db-shm",
+    "**/*.log",
+    "**/*.lock",
+    "**/*.tmp",
+    "**/lock",
+    "**/SingletonLock",
+    "**/SingletonCookie",
+]
+
+[[app]]
+id = "org.mozilla.firefox"
+extra_deny = [
+    "**/places.sqlite-wal",
+    "**/places.sqlite-shm",
+    "**/favicons.sqlite*",
+    "**/storage/**",
+    "**/startupCache/**",
+    "**/safebrowsing/**",
+]
+extra_allow = [
+    "**/chrome/userChrome.css",
+    "**/chrome/userContent.css",
+    "**/prefs.js",
+    "**/user.js",
+    "**/search.json.mozlz4",
+    "**/extensions.json",
+    "**/extension-preferences.json",
+]
+
+[[app]]
+id = "org.chromium.Chromium"
+override_allow = [
+    "**/Preferences",
+    "**/Local State",
+    "**/Bookmarks",
+    "**/Bookmarks.bak",
+    "**/Extensions/**/*.json",
+    "**/Managed Extension Settings/**",
+]
+override_deny = [
+    "**",
+]
+
+[[app]]
+id = "com.valvesoftware.Steam"
+extra_allow = [
+    "**/userdata/**/*.cfg",
+    "**/userdata/**/*.vdf",
+    "**/config/config.vdf",
+    "**/config/loginusers.vdf",
+]
+extra_deny = [
+    "**/logs/**",
+    "**/dumps/**",
+    "**/appcache/**",
+    "**/depotcache/**",
+    "**/steamapps/**",
+    "**/workshop/**",
+]
+
+[[app]]
+id = "org.signal.Signal"
+extra_allow = [
+    "**/preferences",
+    "**/config.json",
+]
+extra_deny = [
+    "**/databases/**",
+    "**/attachments.noindex/**",
+    "**/stickers.noindex/**",
+]
+
+[[app]]
+id = "org.libreoffice.LibreOffice"
+extra_allow = [
+    "**/registrymodifications.xcu",
+    "**/autocorrect/**",
+    "**/autotext/**",
+    "**/template/**",
+    "**/wordbook/**",
+]
+extra_deny = [
+    "**/backup/**",
+    "**/.~lock*",
+    "**/registrymodifications.xcu.bak",
+]
+
+[[app]]
+id = "io.github.celluloid_player.Celluloid"
+extra_allow = [
+    "**/watch_later/**",
+    "**/mpv.conf",
+    "**/input.conf",
+]
+
+[[app]]
+id = "io.missioncenter.MissionCenter"
+extra_allow = [
+    "**/settings.json",
+]

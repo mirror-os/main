@@ -1,0 +1,15 @@
+# YOUR personal Mirror OS configuration
+# This file is YOURS — Mirror OS will never touch it.
+# Add your own packages, settings, and overrides here.
+{ pkgs, ... }:
+
+{
+  # Example: add your own packages
+  # home.packages = with pkgs; [
+  #   htop
+  #   ripgrep
+  # ];
+
+  # Example: override a setting from home.nix
+  # programs.zsh.oh-my-zsh.theme = "agnoster";
+}
