@@ -103,7 +103,7 @@ if [ -f "$BLESSED_APPS" ]; then
         fi
 
         log "  Installing: $app"
-        if flatpak install --system -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
+        if flatpak install --system -y --noninteractive "$app" >> "$LOG" 2>&1; then
             INSTALLED_APPS+=("$app")
         else
             log "  WARNING: Failed to install $app (will retry on next sync)"
@@ -140,16 +140,10 @@ EOF
 log "Running home-manager switch (first run may take a while)..."
 cd "$HM_CONFIG_DIR"
 
-if command -v home-manager &>/dev/null; then
-    HM_CMD="home-manager"
-else
-    HM_CMD="nix run nixpkgs#home-manager --"
-fi
+HM_CMD="nix run nixpkgs#home-manager --"
 
 if $HM_CMD switch --flake ".#$USER" >> "$LOG" 2>&1; then
     log "home-manager switch succeeded"
-elif $HM_CMD switch >> "$LOG" 2>&1; then
-    log "home-manager switch succeeded (legacy mode)"
 else
     log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
 fi

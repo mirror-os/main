@@ -87,7 +87,7 @@ if [ -f "$BLESSED_APPS" ]; then
 
         if ! echo "$CURRENT_APPS" | grep -qx "$app"; then
             log "Installing missing blessed app: $app"
-            if flatpak install --system -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
+            if flatpak install --system -y --noninteractive "$app" >> "$LOG" 2>&1; then
                 CURRENT_APPS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
                 CHANGED=true
             else
