@@ -42,7 +42,7 @@ fi
 log "=== Mirror OS Sync starting ==="
 
 # ── App tracking ────────────────────────────────────────────────────────────
-CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
+CURRENT_APPS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
 LAST_APPS_FILE="$STATE_DIR/flatpak-apps.list"
 CHANGED=false
 
@@ -87,8 +87,8 @@ if [ -f "$BLESSED_APPS" ]; then
 
         if ! echo "$CURRENT_APPS" | grep -qx "$app"; then
             log "Installing missing blessed app: $app"
-            if flatpak install -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
-                CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
+            if flatpak install --system -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
+                CURRENT_APPS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
                 CHANGED=true
             else
                 log "WARNING: Failed to install $app"
@@ -291,7 +291,7 @@ sync_flatpak_settings() {
 
 # ── State snapshot ──────────────────────────────────────────────────────────
 echo "$CURRENT_APPS" > "$STATE_DIR/flatpak-apps.list"
-flatpak list --app --columns=application,version,branch 2>/dev/null > \
+flatpak list --system --app --columns=application,version,branch 2>/dev/null > \
     "$STATE_DIR/flatpak-full.list"
 cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
 
