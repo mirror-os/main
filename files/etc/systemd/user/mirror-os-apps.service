@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS app state sync (triggered by flatpak change)
+After=mirror-os-init.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/mirror-os/mirror-sync
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
