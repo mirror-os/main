@@ -70,8 +70,12 @@ modules:
       - cups
       - distrobox
       - dpkg
+      - git
       - hplip
+      - inotify-tools
+      - python3
       - rsms-inter-fonts
+      - rsync
       - system-config-printer
 
   # Remove Firefox shipped in the base image; it is replaced by a Flatpak.
@@ -80,30 +84,20 @@ modules:
       - firefox
       - firefox-langpacks
 
-  # Copy configuration files, first-boot scripts, and Home Manager defaults
-  # into the image. Source paths are relative to the repository's files/ directory.
+  # Copy configuration files into the image.
+  # Source paths are relative to the repository's files/ directory.
   - type: files
     files:
+      - source: usr
+        destination: /usr
+      - source: etc
+        destination: /etc
       - source: cosign.pub
         destination: /etc/pki/mirror-os/cosign.pub
       - source: policy.json
         destination: /etc/containers/policy.json
       - source: registries.d/mirror-os.yaml
         destination: /etc/containers/registries.d/mirror-os.yaml
-      - source: scripts/install-nix.sh
-        destination: /usr/libexec/mirror-os/install-nix.sh
-      - source: systemd/system/install-nix.service
-        destination: /usr/lib/systemd/system/install-nix.service
-      - source: home-manager/
-        destination: /usr/share/mirror-os/home-manager/
-      - source: scripts/mirror-nix-setup.sh
-        destination: /usr/libexec/mirror-os/mirror-nix-setup.sh
-      - source: systemd/system/mirror-nix-setup.service
-        destination: /usr/lib/systemd/system/mirror-nix-setup.service
-      - source: scripts/mirror-user-setup.sh
-        destination: /usr/libexec/mirror-os/mirror-user-setup.sh
-      - source: systemd/user/mirror-user-setup.service
-        destination: /usr/lib/systemd/user/mirror-user-setup.service
       - source: firewalld/services/localsend.xml
         destination: /etc/firewalld/services/localsend.xml
       - source: scripts/mirror-dev-reset.sh
