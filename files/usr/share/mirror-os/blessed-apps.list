@@ -1,0 +1,27 @@
+# Mirror OS blessed applications
+# One Flatpak app ID per line
+# Lines starting with # are ignored
+
+# Browsers
+org.mozilla.firefox
+org.chromium.Chromium
+
+# Media
+org.videolan.VLC
+io.github.celluloid_player.Celluloid
+
+# Communication
+org.signal.Signal
+
+# Office
+org.libreoffice.LibreOffice
+
+# Utilities
+org.gnome.FileRoller
+org.gnome.Calculator
+org.gnome.TextEditor
+com.github.tchx84.Flatseal
+io.missioncenter.MissionCenter
+
+# Games
+com.valvesoftware.Steam
