@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# Mirror OS State Sync
+# Runs at boot and every :00 hourly.
+# Tracks app installs/removals, syncs app settings via gitallow, versions everything with git.
+
+set -uo pipefail
+
+export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
+
+LOG="$HOME/.local/share/mirror-os/sync.log"
+STATE_DIR="$HOME/.local/share/mirror-os/state"
+HM_CONFIG_DIR="$HOME/.config/home-manager"
+BLESSED_APPS="/usr/share/mirror-os/blessed-apps.list"
+EXCLUDED_APPS="$HOME/.config/mirror-os/excluded-apps.list"
+INIT_DONE="$HOME/.local/share/mirror-os/.init-complete"
+ALLOWLIST="/usr/share/mirror-os/flatpak-allowlist.toml"
+SETTINGS_SNAPSHOT_DIR="$STATE_DIR/flatpak-settings"
+FLATPAK_DATA_DIR="$HOME/.var/app"
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG")" "$HOME/.config/mirror-os"
+touch "$EXCLUDED_APPS"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
+        mv "$LOG" "${LOG}.1"
+        touch "$LOG"
+    fi
+}
+
+# ── Guards ─────────────────────────────────────────────────────────────────
+if [ ! -f "$INIT_DONE" ]; then
+    log "Init not yet complete, skipping sync"
+    exit 0
+fi
+
+if ! command -v nix &>/dev/null; then
+    log "Nix not found, skipping sync"
+    exit 0
+fi
+
+log "=== Mirror OS Sync starting ==="
+
+# ── App tracking ────────────────────────────────────────────────────────────
+CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
+LAST_APPS_FILE="$STATE_DIR/flatpak-apps.list"
+CHANGED=false
+
+if [ -f "$LAST_APPS_FILE" ]; then
+    LAST_APPS=$(cat "$LAST_APPS_FILE")
+
+    REMOVED=$(comm -23 <(echo "$LAST_APPS") <(echo "$CURRENT_APPS") 2>/dev/null || true)
+    ADDED=$(comm -13 <(echo "$LAST_APPS") <(echo "$CURRENT_APPS") 2>/dev/null || true)
+
+    if [ -n "$REMOVED" ]; then
+        while IFS= read -r app; do
+            [ -z "$app" ] && continue
+            if [ -f "$BLESSED_APPS" ] && grep -qx "$app" "$BLESSED_APPS"; then
+                if ! grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
+                    echo "$app" >> "$EXCLUDED_APPS"
+                    log "User removed blessed app: $app → added to excluded list"
+                    CHANGED=true
+                fi
+            fi
+        done <<< "$REMOVED"
+    fi
+
+    if [ -n "$ADDED" ]; then
+        while IFS= read -r app; do
+            [ -z "$app" ] && continue
+            if grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
+                grep -v "^${app}$" "$EXCLUDED_APPS" > "${EXCLUDED_APPS}.tmp" && \
+                    mv "${EXCLUDED_APPS}.tmp" "$EXCLUDED_APPS"
+                log "User reinstalled excluded app: $app → removed from excluded list"
+                CHANGED=true
+            fi
+        done <<< "$ADDED"
+    fi
+fi
+
+# ── App reconciliation ──────────────────────────────────────────────────────
+if [ -f "$BLESSED_APPS" ]; then
+    while IFS= read -r app; do
+        [ -z "$app" ] || [[ "$app" == \#* ]] && continue
+
+        grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null && continue
+
+        if ! echo "$CURRENT_APPS" | grep -qx "$app"; then
+            log "Installing missing blessed app: $app"
+            if flatpak install -y --noninteractive flathub "$app" >> "$LOG" 2>&1; then
+                CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
+                CHANGED=true
+            else
+                log "WARNING: Failed to install $app"
+            fi
+        fi
+    done < "$BLESSED_APPS"
+fi
+
+# ── Update home-mirror-apps.nix ────────────────────────────────────────────
+HM_APPS_FILE="$HM_CONFIG_DIR/home-mirror-apps.nix"
+MANAGED_APPS=""
+while IFS= read -r app; do
+    [ -z "$app" ] && continue
+    if [ -f "$BLESSED_APPS" ] && grep -qx "$app" "$BLESSED_APPS"; then
+        MANAGED_APPS="${MANAGED_APPS}    \"${app}\"\n"
+    fi
+done <<< "$CURRENT_APPS"
+
+NEW_HM_APPS="# AUTO-MANAGED by Mirror OS — do not edit manually
+# Maintained by mirror-sync. Your changes will be overwritten.
+# To customize apps, edit home-user.nix instead.
+{ ... }:
+
+{
+  services.flatpak.packages = [
+$(echo -e "$MANAGED_APPS")  ];
+}"
+
+if [ ! -f "$HM_APPS_FILE" ] || [ "$(cat "$HM_APPS_FILE")" != "$NEW_HM_APPS" ]; then
+    echo "$NEW_HM_APPS" > "$HM_APPS_FILE"
+    CHANGED=true
+    log "Updated home-mirror-apps.nix"
+fi
+
+# ── home-manager switch ─────────────────────────────────────────────────────
+if [ "$CHANGED" = true ] && [ -d "$HM_CONFIG_DIR" ]; then
+    log "Running home-manager switch..."
+    cd "$HM_CONFIG_DIR"
+    if home-manager switch --flake ".#$USER" >> "$LOG" 2>&1; then
+        log "home-manager switch succeeded"
+    elif home-manager switch >> "$LOG" 2>&1; then
+        log "home-manager switch succeeded (legacy mode)"
+    else
+        log "WARNING: home-manager switch failed"
+    fi
+fi
+
+# ── Gitallow: build rsync filter rules for a given Flatpak app ─────────────
+mirror_build_app_rules() {
+    local app_id="$1"
+    local rules_file
+    rules_file=$(mktemp "/tmp/mirror-rsync-rules-XXXXXX")
+
+    if [ ! -f "$ALLOWLIST" ]; then
+        echo "- *" > "$rules_file"
+        echo "$rules_file"
+        return
+    fi
+
+    python3 - "$app_id" "$ALLOWLIST" "$rules_file" << 'PYEOF'
+import sys
+import re
+
+app_id = sys.argv[1]
+toml_path = sys.argv[2]
+out_path = sys.argv[3]
+
+def parse_allowlist(path):
+    result = {'allow': [], 'deny': [], 'apps': {}}
+    current_section = None
+    current_app = None
+
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except Exception:
+        return result
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+
+        if line == '[allow]':
+            current_section = 'allow'
+            current_app = None
+            continue
+        elif line == '[deny]':
+            current_section = 'deny'
+            current_app = None
+            continue
+        elif line == '[[app]]':
+            current_section = 'app'
+            current_app = {}
+            continue
+
+        if current_section == 'app' and current_app is not None:
+            if line.startswith('id'):
+                m = re.match(r'id\s*=\s*"([^"]+)"', line)
+                if m:
+                    current_app['id'] = m.group(1)
+                    result['apps'][m.group(1)] = current_app
+            else:
+                key_match = re.match(r'(\w+)\s*=\s*\[', line)
+                if key_match:
+                    key = key_match.group(1)
+                    current_app['_collecting'] = key
+                    inline = re.findall(r'"([^"]+)"', line)
+                    if inline and ']' in line:
+                        current_app[key] = inline
+                        current_app.pop('_collecting', None)
+                    else:
+                        current_app.setdefault(key, [])
+                        for v in inline:
+                            current_app[key].append(v)
+                elif current_app.get('_collecting'):
+                    if ']' in line:
+                        current_app.pop('_collecting', None)
+                    else:
+                        m = re.match(r'"([^"]+)"', line)
+                        if m:
+                            key = current_app['_collecting']
+                            current_app.setdefault(key, []).append(m.group(1))
+
+        elif current_section in ('allow', 'deny'):
+            m = re.match(r'"([^"]+)"', line)
+            if m:
+                result[current_section].append(m.group(1))
+
+    return result
+
+def glob_to_rsync(pattern):
+    p = pattern.lstrip('/')
+    if p.startswith('**/'):
+        p = p[3:]
+    if p.endswith('/**'):
+        p = p[:-3] + '/'
+    return p
+
+data = parse_allowlist(toml_path)
+app_data = data['apps'].get(app_id, {})
+rules = []
+
+if 'override_allow' in app_data:
+    for p in app_data.get('override_deny', []):
+        rules.append(f'- {glob_to_rsync(p)}')
+    for p in app_data.get('override_allow', []):
+        rules.append(f'+ {glob_to_rsync(p)}')
+    rules.append('- *')
+else:
+    for p in app_data.get('extra_deny', []):
+        rules.append(f'- {glob_to_rsync(p)}')
+    for p in data['deny']:
+        rules.append(f'- {glob_to_rsync(p)}')
+    for p in app_data.get('extra_allow', []):
+        rules.append(f'+ {glob_to_rsync(p)}')
+    for p in data['allow']:
+        rules.append(f'+ {glob_to_rsync(p)}')
+    rules.append('- *')
+
+with open(out_path, 'w') as f:
+    for r in rules:
+        f.write(r + '\n')
+PYEOF
+
+    echo "$rules_file"
+}
+
+# ── Sync app settings via gitallow ─────────────────────────────────────────
+sync_flatpak_settings() {
+    [ ! -d "$FLATPAK_DATA_DIR" ] && return
+    if [ ! -f "$ALLOWLIST" ]; then
+        log "WARNING: No flatpak-allowlist.toml found, skipping app settings sync"
+        return
+    fi
+
+    log "Syncing app settings (gitallow)..."
+    mkdir -p "$SETTINGS_SNAPSHOT_DIR"
+
+    for app_dir in "$FLATPAK_DATA_DIR"/*/; do
+        local app_id
+        app_id=$(basename "$app_dir")
+        [ ! -d "$app_dir" ] && continue
+
+        local snapshot_dir="$SETTINGS_SNAPSHOT_DIR/$app_id"
+        local rules_file
+        rules_file=$(mirror_build_app_rules "$app_id")
+
+        mkdir -p "$snapshot_dir"
+
+        rsync -a --delete \
+            --filter="merge $rules_file" \
+            "$app_dir" \
+            "$snapshot_dir/" \
+            2>/dev/null || log "WARNING: rsync failed for $app_id"
+
+        rm -f "$rules_file"
+    done
+}
+
+# ── State snapshot ──────────────────────────────────────────────────────────
+echo "$CURRENT_APPS" > "$STATE_DIR/flatpak-apps.list"
+flatpak list --app --columns=application,version,branch 2>/dev/null > \
+    "$STATE_DIR/flatpak-full.list"
+cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
+
+mkdir -p "$STATE_DIR/home-manager"
+cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
+
+if [ -d "$HOME/.config/cosmic" ]; then
+    mkdir -p "$STATE_DIR/cosmic-config"
+    rsync -a --delete "$HOME/.config/cosmic/" "$STATE_DIR/cosmic-config/" 2>/dev/null || \
+        cp -r "$HOME/.config/cosmic/." "$STATE_DIR/cosmic-config/" 2>/dev/null || true
+fi
+
+nix profile list > "$STATE_DIR/nix-profile.list" 2>/dev/null || true
+
+sync_flatpak_settings
+
+# ── Git commit ──────────────────────────────────────────────────────────────
+cd "$STATE_DIR"
+if [ -n "$(git status --short 2>/dev/null)" ]; then
+    git add -A
+
+    CHANGED_APPS=$(git diff --cached --name-only 2>/dev/null \
+        | grep "^flatpak-settings/" \
+        | sed 's|flatpak-settings/||' \
+        | cut -d'/' -f1 \
+        | sort -u | tr '\n' ' ')
+
+    COMMIT_MSG="sync: $(date '+%Y-%m-%d %H:%M:%S')"
+    [ -n "$CHANGED_APPS" ] && COMMIT_MSG="$COMMIT_MSG | settings: $CHANGED_APPS"
+    [ "$CHANGED" = true ] && COMMIT_MSG="$COMMIT_MSG | apps updated"
+
+    git commit -m "$COMMIT_MSG" >> "$LOG" 2>&1 && \
+        log "State committed: $COMMIT_MSG" || \
+        log "WARNING: git commit failed"
+else
+    log "No state changes to commit"
+fi
+
+log "=== Mirror OS Sync complete ==="
