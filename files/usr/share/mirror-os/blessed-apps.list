@@ -3,25 +3,27 @@
 # Lines starting with # are ignored
 
 # Browsers
-org.mozilla.firefox
-org.chromium.Chromium
+app.zen_browser.zen
 
 # Media
-org.videolan.VLC
-io.github.celluloid_player.Celluloid
+org.kde.haruna
+org.gnome.Loupe
 
 # Communication
-org.signal.Signal
+org.gnome.Geary
+org.localsend.localsend_app
+org.kde.kdeconnect
 
 # Office
-org.libreoffice.LibreOffice
+org.onlyoffice.desktopeditors
+org.gnome.Calendar
 
 # Utilities
-org.gnome.FileRoller
 org.gnome.Calculator
-org.gnome.TextEditor
 com.github.tchx84.Flatseal
-io.missioncenter.MissionCenter
+it.mijorus.gearlever
+io.github.dvlv.boxbuddyrs
+com.usebottles.bottles
 
 # Games
-com.valvesoftware.Steam
+com.github.k4zmu2a.spacecadetpinball
