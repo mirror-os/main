@@ -90,8 +90,6 @@ modules:
     files:
       - source: usr
         destination: /usr
-      - source: etc
-        destination: /etc
       - source: cosign.pub
         destination: /etc/pki/mirror-os/cosign.pub
       - source: policy.json
