@@ -1,0 +1,14 @@
+[Unit]
+Description=Mirror OS State Sync
+After=mirror-os-init.service
+Requires=mirror-os-init.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/mirror-os/mirror-sync
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

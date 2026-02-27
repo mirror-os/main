@@ -1,0 +1,16 @@
+[Unit]
+Description=Mirror OS First-Boot Initialization
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/home/%u/.local/share/mirror-os/.init-complete
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/mirror-os/mirror-init
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=default.target

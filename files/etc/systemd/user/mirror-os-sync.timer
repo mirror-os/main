@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror OS hourly state sync
+After=mirror-os-init.service
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

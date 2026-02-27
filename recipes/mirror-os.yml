@@ -90,6 +90,8 @@ modules:
     files:
       - source: usr
         destination: /usr
+      - source: etc
+        destination: /etc
       - source: cosign.pub
         destination: /etc/pki/mirror-os/cosign.pub
       - source: policy.json
@@ -106,6 +108,11 @@ modules:
         destination: /usr/share/mirror-os/default-flatpaks.list
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
+
+  # Enable Mirror OS systemd user units for all users.
+  - type: script
+    scripts:
+      - enable-mirror-services.sh
 
   # Register Flatpak remotes on first boot for all users.
   # No app installs here — all Flatpaks are managed declaratively via nix-flatpak in Home Manager.

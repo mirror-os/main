@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS flatpak app change detector
+After=mirror-os-init.service
+
+[Path]
+PathChanged=%h/.local/share/flatpak/app
+MakeDirectory=true
+
+[Install]
+WantedBy=default.target
