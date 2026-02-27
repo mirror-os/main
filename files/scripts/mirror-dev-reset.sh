@@ -14,6 +14,7 @@ echo "This will reset your Mirror OS installation to first-boot state."
 echo ""
 echo "The following will be DELETED:"
 echo "  - All Home Manager config and generations"
+echo "  - All installed Flatpaks (blessed apps will be reinstalled)"
 echo ""
 echo "Press Ctrl+C to cancel, or Enter to continue..."
 read -r
@@ -63,18 +64,23 @@ nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" || {
   echo "→ Home Manager switch completed with warnings (check output above)."
 }
 
-# ── Step 12: Reset user Flatpaks ──────────────────────────────────────────────
-echo "→ Resetting user Flatpaks..."
-echo "  → Removing all user-installed Flatpaks..."
-flatpak list --user --app --columns=application 2>/dev/null | while IFS= read -r app; do
-  if [ -n "$app" ]; then
-    echo "    → Removing user Flatpak: $app"
-    flatpak uninstall --user --noninteractive "$app" || true
-  fi
-done
-echo "  → Triggering sync to reinstall blessed apps..."
+# ── Step 12: Reset all Flatpaks ───────────────────────────────────────────────
+echo "→ Removing all system Flatpak apps (requires sudo)..."
+flatpak list --system --app --columns=application 2>/dev/null \
+  | xargs -r sudo flatpak uninstall --system -y --noninteractive || true
+
+echo "→ Removing all user Flatpak apps..."
+flatpak list --user --app --columns=application 2>/dev/null \
+  | xargs -r flatpak uninstall --user -y --noninteractive || true
+
+# Clear flatpak state so mirror-sync reinstalls blessed apps fresh instead of
+# treating the removals above as user-initiated exclusions.
+rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
+> "$REAL_HOME/.config/mirror-os/excluded-apps.list"
+
+echo "→ Reinstalling blessed apps via mirror-sync..."
 systemctl --user start mirror-os-sync.service 2>/dev/null || true
-echo "  → Flatpaks are installing in the background. Check progress with:"
+echo "  → Blessed apps are installing in the background. Check progress with:"
 echo "     journalctl --user -u mirror-os-sync.service -f"
 
 # ── Step 13: Reset COSMIC desktop settings ────────────────────────────────────
