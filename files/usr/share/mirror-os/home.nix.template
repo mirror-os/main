@@ -24,14 +24,6 @@
     };
   };
 
-  # Editor
-  programs.neovim = {
-    enable = true;
-    defaultEditor = true;
-    viAlias = true;
-    vimAlias = true;
-  };
-
   # Flatpak remote
   services.flatpak = {
     remotes = [{
