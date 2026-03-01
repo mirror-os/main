@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Locate the waydroid binary from the user's Nix Home Manager profile and exec it.
+# MirrorOS installs waydroid via Home Manager; this wrapper lets the system-level
+# waydroid-container.service resolve the binary at runtime without a hardcoded
+# Nix store path (which changes with each package update).
+
+set -eo pipefail
+
+for f in \
+    /nix/var/nix/profiles/per-user/*/home-manager/bin/waydroid \
+    /var/home/*/.nix-profile/bin/waydroid \
+    /var/home/*/.local/state/nix/profiles/home-manager/bin/waydroid; do
+    if [ -x "$f" ]; then
+        exec "$f" "$@"
+    fi
+done
+
+printf 'mirror-os: waydroid binary not found in any Nix Home Manager profile.\n' >&2
+printf 'Ensure mirror-os-init has completed and Home Manager has been applied.\n' >&2
+exit 1
