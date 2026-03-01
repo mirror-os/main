@@ -133,7 +133,9 @@ fi
 if $DO_COSMIC; then
     echo "→ Resetting COSMIC desktop settings..."
     sudo rm -rf "$REAL_HOME/.config/cosmic"
-    echo "  → COSMIC config cleared. Desktop will return to defaults on next login."
+    cp -r /usr/share/cosmic "$REAL_HOME/.config/cosmic"
+    chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/.config/cosmic"
+    echo "  → COSMIC config reset to Mirror OS defaults."
 fi
 
 # ── Init marker removal ───────────────────────────────────────────────────────
