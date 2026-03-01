@@ -1,0 +1,6 @@
+# Allow wheel group members to change a user's login shell to zsh without
+# entering a password.  This lets mirror-init set /usr/bin/zsh as the default
+# shell non-interactively during the first-login bootstrap sequence.
+# Scoped to the exact usermod invocation used by mirror-init — no broader
+# sudo privileges are granted.
+%wheel ALL=(root) NOPASSWD: /usr/sbin/usermod -s /usr/bin/zsh *
