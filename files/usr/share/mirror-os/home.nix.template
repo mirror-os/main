@@ -63,7 +63,8 @@
   };
 
   # GTK theme and icon theme for native (non-Flatpak) GTK3/GTK4 apps.
-  # Both packages are baked into the image via RPM so no Nix package is needed.
+  # Both packages are baked into the image via RPM (adw-gtk3-theme, papirus-icon-theme)
+  # so no Nix package is needed here.
   # package = null tells home-manager to use the system-installed theme.
   # Light-mode users can override in home-user.nix with adw-gtk3 / Papirus-Light.
   gtk = {
