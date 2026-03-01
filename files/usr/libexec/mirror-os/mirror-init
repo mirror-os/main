@@ -34,13 +34,14 @@ notify() {
 }
 
 log "=== Mirror OS Init starting (user: $USER) ==="
-notify "Setting up Mirror OS…" "First-time setup is running in the background. This may take a few minutes." "system-software-install"
 
 # ── Step 1: Guard — already done ───────────────────────────────────────────
 if [ -f "$DONE_MARKER" ]; then
     log "Init already completed. Exiting."
     exit 0
 fi
+
+notify "Setting up Mirror OS…" "First-time setup is running in the background. This may take a few minutes." "system-software-install"
 
 # ── Step 2: Set zsh as the default login shell ─────────────────────────────
 # /usr/bin/zsh is baked into the image.  The sudoers drop-in at
