@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mirror OS — trusted firewalld zone
+  Declares waydroid0 as a trusted interface so that the nftables NAT rules
+  applied by waydroid-container.service are not blocked.  The interface is
+  created dynamically at runtime; registering it here ensures firewalld assigns
+  the correct zone as soon as it appears.
+-->
+<zone target="ACCEPT">
+  <short>Trusted</short>
+  <description>All network connections are accepted.</description>
+  <interface name="waydroid0"/>
+</zone>

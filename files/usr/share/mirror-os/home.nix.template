@@ -13,6 +13,14 @@
 
   programs.home-manager.enable = true;
 
+  # Git identity — set once at first login, matches the identity mirror-init
+  # uses for the state repo.  Users can override in home-user.nix.
+  programs.git = {
+    enable = true;
+    userName = "__USERNAME__";
+    userEmail = "__USERNAME__@mirror-os.local";
+  };
+
   # Default packages — installed for every user on first login.
   # Waydroid is here because it is not available as a Flatpak; the Nix package
   # provides the waydroid CLI and session tools.  The system-level container

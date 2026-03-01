@@ -116,11 +116,6 @@ modules:
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
 
-  # Enable Mirror OS systemd user units for all users.
-  - type: script
-    scripts:
-      - enable-mirror-services.sh
-
   # Register Flatpak remotes on first boot for all users.
   # No app installs here — all Flatpaks are managed declaratively via nix-flatpak in Home Manager.
   - type: default-flatpaks
@@ -136,8 +131,9 @@ modules:
           url: https://distribute.kde.org/kdeapps.flatpakrepo
           name: kde
 
-  # Make the first-boot scripts executable and enable their systemd services.
-  # Must run after the files module so the scripts and unit files are present.
+  # Fix file permissions that the files module does not preserve:
+  # mirror-dev-reset needs +x; sudoers drop-in needs 0440 (sudo refuses it
+  # otherwise).  Also registers the localsend firewalld service at build time.
   - type: script
     scripts:
       - enable-services.sh
