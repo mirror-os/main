@@ -21,7 +21,7 @@
             ],
             include: [
                 "org.localsend.localsend_app",
-                "org.kde.kdeconnect"
+                "org.kde.kdeconnect",
             ],
         ),
     ),
@@ -30,9 +30,13 @@
         icon: "folder-symbolic",
         filter: Categories(
             categories: ["Game"],
-            exclude: [],
+            exclude: ["com.usebottles.bottles"],
             include: [
                 "com.github.k4zmu2a.spacecadetpinball",
+                "org.gnome.Mahjongg",
+                "org.gnome.Aisleriot",
+                "org.gnome.Sudoku",
+                "org.gnome.TwentyFortyEight",
             ],
         ),
     ),
@@ -63,7 +67,7 @@
                 "io.github.dvlv.boxbuddyrs",
                 "it.mijorus.gearlever",
                 "com.usebottles.bottles",
-                "com.github.tchx84.Flatseal"
+                "com.github.tchx84.Flatseal",
             ],
         ),
     ),
