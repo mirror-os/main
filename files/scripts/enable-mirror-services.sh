@@ -4,6 +4,13 @@ set -oue pipefail
 # Ensure scripts are executable
 chmod +x /usr/libexec/mirror-os/mirror-init
 chmod +x /usr/libexec/mirror-os/mirror-sync
+chmod +x /usr/libexec/mirror-os/waydroid-run
+chmod +x /usr/libexec/mirror-os/waydroid-prestart.sh
+
+# Enable waydroid-container.service at the system level
+mkdir -p /usr/lib/systemd/system/multi-user.target.wants
+ln -sf /usr/lib/systemd/system/waydroid-container.service \
+    /usr/lib/systemd/system/multi-user.target.wants/waydroid-container.service
 
 # Enable systemd user units at the system level so they apply to all users
 mkdir -p /usr/lib/systemd/user/default.target.wants

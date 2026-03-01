@@ -1,0 +1,29 @@
+[Unit]
+Description=Waydroid Container Manager
+Documentation=https://waydro.id
+# Start after firewalld so nftables masquerade rules are in place before the
+# Android container comes up.  Network is also a hard requirement.
+After=network.target firewalld.service
+Wants=network.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+
+# Patch waydroid_base.prop with GBM/Mesa GPU props before every start so that
+# hardware acceleration is not lost to a software fallback after reboots.
+ExecStartPre=/usr/libexec/mirror-os/waydroid-prestart.sh
+
+# Discover the waydroid binary from whichever Nix Home Manager profile is
+# present (MirrorOS installs waydroid via Home Manager, not system-wide RPMs).
+ExecStart=/usr/libexec/mirror-os/waydroid-run container start
+ExecStop=/usr/libexec/mirror-os/waydroid-run container stop
+
+# cgroups v2 delegation: hand the service's cgroup subtree to the LXC
+# container so Android can manage its own process hierarchy.
+Delegate=yes
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

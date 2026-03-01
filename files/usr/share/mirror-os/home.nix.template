@@ -12,6 +12,14 @@
 
   programs.home-manager.enable = true;
 
+  # Default packages — installed for every user on first login.
+  # Waydroid is here because it is not available as a Flatpak; the Nix package
+  # provides the waydroid CLI and session tools.  The system-level container
+  # service (waydroid-container.service) is baked into the image separately.
+  home.packages = with pkgs; [
+    waydroid
+  ];
+
   # Shell
   programs.zsh = {
     enable = true;
@@ -22,6 +30,19 @@
       theme = "robbyrussell";
       plugins = [ "git" "sudo" "history" "dirhistory" ];
     };
+    # First-run Waydroid init: prompt for sudo on the very first waydroid
+    # invocation.  Uses the full resolved binary path so sudo's restricted
+    # PATH does not hide the Nix-installed binary.
+    initExtra = ''
+      waydroid() {
+        if ! [ -d /var/lib/waydroid/images ]; then
+          printf '\nWaydroid needs a one-time setup to download the Android image.\n'
+          printf 'Your sudo password is required.\n\n'
+          sudo "$(command -v waydroid)" init || return 1
+        fi
+        command waydroid "$@"
+      }
+    '';
   };
 
   # Flatpak remote
