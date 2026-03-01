@@ -65,14 +65,18 @@ modules:
   # before Nix is ready. Includes distrobox for containerized Linux environments,
   # the CUPS printing stack with HP driver support, font rendering libraries,
   # and the dpkg tool needed for the installer handler.
+  # adw-gtk3 and papirus-icon-theme are required for consistent Flatpak app
+  # theming via services.flatpak.overrides.global in Home Manager.
   - type: rpm-ostree
     install:
+      - adw-gtk3
       - cups
       - distrobox
       - dpkg
       - git
       - hplip
       - inotify-tools
+      - papirus-icon-theme
       - python3
       - rsms-inter-fonts
       - jetbrains-mono-fonts

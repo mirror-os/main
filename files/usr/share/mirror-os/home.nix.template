@@ -54,7 +54,17 @@
     '';
   };
 
-  # Flatpak remotes — managed declaratively by nix-flatpak
+  # GTK theme and icon theme for native (non-Flatpak) GTK3/GTK4 apps.
+  # Both packages are baked into the image via RPM so no Nix package is needed.
+  # package = null tells home-manager to use the system-installed theme.
+  # Light-mode users can override in home-user.nix with adw-gtk3 / Papirus-Light.
+  gtk = {
+    enable = true;
+    theme.name = "adw-gtk3-dark";
+    iconTheme.name = "Papirus-Dark";
+  };
+
+  # Flatpak — remotes and global overrides managed declaratively by nix-flatpak
   services.flatpak = {
     enable = true;
     remotes = [
@@ -65,6 +75,16 @@
       onActivation = false;
       auto = {
         enable = false;
+      };
+    };
+    # Make all Flatpak apps use the system GTK and icon themes so they match
+    # the COSMIC desktop. adw-gtk3-dark and Papirus-Dark are baked into the image.
+    # Note: these are fixed to the dark variants; light-mode users can override
+    # via home-user.nix with adw-gtk3 / Papirus-Light.
+    overrides.global = {
+      Environment = {
+        GTK_THEME = "adw-gtk3-dark";
+        ICON_THEME = "Papirus-Dark";
       };
     };
   };

@@ -1,11 +1,40 @@
-# AUTO-MANAGED by Mirror OS — do not edit manually
-# This file is maintained by mirror-sync. Your changes will be overwritten.
-# To customize apps, edit home-user.nix instead.
+# Mirror OS blessed applications — system-managed, updated with image releases.
+# This file is the source of truth for default apps. It is filtered by
+# ~/.config/mirror-os/excluded-apps.list and written to home-mirror-apps.nix
+# by mirror-sync on every run.
+# To permanently remove an app: uninstall it — mirror-sync will record the exclusion.
+# To add personal apps: edit home-user.nix instead.
 { ... }:
 
 {
   services.flatpak.packages = [
-    # Populated automatically on first boot
-    # Maintained by mirror-sync thereafter
+    # Browsers
+    { appId = "app.zen_browser.zen"; origin = "flathub"; }
+
+    # Media
+    { appId = "org.kde.haruna"; origin = "flathub"; }
+    { appId = "org.gnome.Loupe"; origin = "flathub"; }
+
+    # Communication
+    { appId = "org.gnome.Geary"; origin = "flathub"; }
+    { appId = "org.localsend.localsend_app"; origin = "flathub"; }
+    { appId = "org.kde.kdeconnect"; origin = "kde"; }
+
+    # Office
+    { appId = "org.onlyoffice.desktopeditors"; origin = "flathub"; }
+    { appId = "org.gnome.Calendar"; origin = "flathub"; }
+
+    # Utilities
+    { appId = "org.gnome.Calculator"; origin = "flathub"; }
+    { appId = "com.github.tchx84.Flatseal"; origin = "flathub"; }
+    { appId = "it.mijorus.gearlever"; origin = "flathub"; }
+    { appId = "io.github.dvlv.boxbuddyrs"; origin = "flathub"; }
+    { appId = "com.usebottles.bottles"; origin = "flathub"; }
+
+    # Games
+    { appId = "com.github.k4zmu2a.spacecadetpinball"; origin = "flathub"; }
+    { appId = "org.gnome.Mahjongg"; origin = "flathub"; }
+    { appId = "org.gnome.Sudoku"; origin = "flathub"; }
+    { appId = "org.gnome.TwentyFortyEight"; origin = "flathub"; }
   ];
 }

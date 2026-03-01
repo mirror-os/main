@@ -10,7 +10,7 @@ export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
 LOG="$HOME/.local/share/mirror-os/sync.log"
 STATE_DIR="$HOME/.local/share/mirror-os/state"
 HM_CONFIG_DIR="$HOME/.config/home-manager"
-BLESSED_APPS="/usr/share/mirror-os/blessed-apps.list"
+APPS_TEMPLATE="/usr/share/mirror-os/home-mirror-apps.nix.template"
 EXCLUDED_APPS="$HOME/.config/mirror-os/excluded-apps.list"
 INIT_DONE="$HOME/.local/share/mirror-os/.init-complete"
 ALLOWLIST="/usr/share/mirror-os/flatpak-allowlist.toml"
@@ -42,7 +42,8 @@ fi
 log "=== Mirror OS Sync starting ==="
 
 # ── App tracking ────────────────────────────────────────────────────────────
-CURRENT_APPS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
+# Track both user and system installs so we catch removals regardless of level.
+CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
 LAST_APPS_FILE="$STATE_DIR/flatpak-apps.list"
 CHANGED=false
 
@@ -55,7 +56,8 @@ if [ -f "$LAST_APPS_FILE" ]; then
     if [ -n "$REMOVED" ]; then
         while IFS= read -r app; do
             [ -z "$app" ] && continue
-            if [ -f "$BLESSED_APPS" ] && grep -qx "$app" "$BLESSED_APPS"; then
+            # Check if this is a blessed app (declared in the template)
+            if grep -q "appId = \"$app\"" "$APPS_TEMPLATE" 2>/dev/null; then
                 if ! grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
                     echo "$app" >> "$EXCLUDED_APPS"
                     log "User removed blessed app: $app → added to excluded list"
@@ -78,44 +80,31 @@ if [ -f "$LAST_APPS_FILE" ]; then
     fi
 fi
 
-# ── App reconciliation ──────────────────────────────────────────────────────
-if [ -f "$BLESSED_APPS" ]; then
-    while IFS= read -r app; do
-        [ -z "$app" ] || [[ "$app" == \#* ]] && continue
-
-        grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null && continue
-
-        if ! echo "$CURRENT_APPS" | grep -qx "$app"; then
-            log "Installing missing blessed app: $app"
-            if flatpak install --system -y --noninteractive "$app" >> "$LOG" 2>&1; then
-                CURRENT_APPS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
-                CHANGED=true
-            else
-                log "WARNING: Failed to install $app"
-            fi
-        fi
-    done < "$BLESSED_APPS"
+# ── Detect image update (template hash change) ──────────────────────────────
+# When a new image is rebased, the apps template may contain new blessed apps.
+# Detect this by hashing the template and comparing with the stored hash.
+TEMPLATE_HASH_FILE="$STATE_DIR/home-mirror-apps-template.hash"
+TEMPLATE_HASH=$(sha256sum "$APPS_TEMPLATE" 2>/dev/null | cut -d' ' -f1 || echo "")
+if [ -n "$TEMPLATE_HASH" ]; then
+    if [ ! -f "$TEMPLATE_HASH_FILE" ] || [ "$TEMPLATE_HASH" != "$(cat "$TEMPLATE_HASH_FILE")" ]; then
+        log "Apps template changed — image update detected, regenerating app list"
+        echo "$TEMPLATE_HASH" > "$TEMPLATE_HASH_FILE"
+        CHANGED=true
+    fi
 fi
 
-# ── Update home-mirror-apps.nix ────────────────────────────────────────────
+# ── Generate home-mirror-apps.nix from template ─────────────────────────────
+# Filter the blessed-apps template through the excluded-apps list and write
+# the result to home-mirror-apps.nix. nix-flatpak then installs/removes apps
+# to match this declaration on the next home-manager switch.
 HM_APPS_FILE="$HM_CONFIG_DIR/home-mirror-apps.nix"
-MANAGED_APPS=""
-while IFS= read -r app; do
-    [ -z "$app" ] && continue
-    if [ -f "$BLESSED_APPS" ] && grep -qx "$app" "$BLESSED_APPS"; then
-        MANAGED_APPS="${MANAGED_APPS}    \"${app}\"\n"
+NEW_HM_APPS=$(while IFS= read -r line; do
+    appid=$(echo "$line" | grep -oP '(?<=appId = ")[^"]+' 2>/dev/null || true)
+    if [ -n "$appid" ] && grep -qx "$appid" "$EXCLUDED_APPS" 2>/dev/null; then
+        continue
     fi
-done <<< "$CURRENT_APPS"
-
-NEW_HM_APPS="# AUTO-MANAGED by Mirror OS — do not edit manually
-# Maintained by mirror-sync. Your changes will be overwritten.
-# To customize apps, edit home-user.nix instead.
-{ ... }:
-
-{
-  services.flatpak.packages = [
-$(echo -e "$MANAGED_APPS")  ];
-}"
+    echo "$line"
+done < "$APPS_TEMPLATE")
 
 if [ ! -f "$HM_APPS_FILE" ] || [ "$(cat "$HM_APPS_FILE")" != "$NEW_HM_APPS" ]; then
     echo "$NEW_HM_APPS" > "$HM_APPS_FILE"
@@ -311,7 +300,7 @@ sync_flatpak_settings() {
 
 # ── State snapshot ──────────────────────────────────────────────────────────
 echo "$CURRENT_APPS" > "$STATE_DIR/flatpak-apps.list"
-flatpak list --system --app --columns=application,version,branch 2>/dev/null > \
+flatpak list --app --columns=application,version,branch 2>/dev/null > \
     "$STATE_DIR/flatpak-full.list"
 cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
 
