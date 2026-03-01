@@ -15,19 +15,49 @@ jobs:
       id-token: write
 
     steps:
-      # Wrap the BlueBuild action in a retry harness.
-      # Transient failures (RPM Fusion mirror timeouts, registry blips, etc.)
-      # are retried up to 3 times total with a 60-second cool-down between
-      # attempts.  Genuine build errors (bad recipe, script failures) will
-      # fail all attempts and surface the same exit-code as before.
-      - name: Build Mirror OS image
-        uses: Wandalen/wretry.action@v3
+      # Three attempts with a 60-second cooldown between each.
+      # Transient failures (RPM Fusion mirror timeouts, registry blips) are
+      # retried automatically.  Genuine build errors fail all three attempts
+      # and surface the same exit-code as before.
+      #
+      # Uses repeated native steps rather than a wrapper action so that the
+      # multiline cosign_private_key secret is handled by the Actions runner
+      # (which masks secrets correctly) instead of being parsed as raw YAML.
+
+      - name: Build Mirror OS image (attempt 1/3)
+        id: attempt_1
+        continue-on-error: true
+        uses: blue-build/github-action@v1
         with:
-          action: blue-build/github-action@v1
-          with: |
-            recipe: mirror-os.yml
-            cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
-            registry_token: ${{ github.token }}
-            pr_event_number: ${{ github.event.number }}
-          attempt_limit: 3
-          attempt_delay: 60000
+          recipe: mirror-os.yml
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          registry_token: ${{ github.token }}
+          pr_event_number: ${{ github.event.pull_request.number }}
+
+      - name: Cooldown before attempt 2
+        if: steps.attempt_1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Build Mirror OS image (attempt 2/3)
+        id: attempt_2
+        if: steps.attempt_1.outcome == 'failure'
+        continue-on-error: true
+        uses: blue-build/github-action@v1
+        with:
+          recipe: mirror-os.yml
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          registry_token: ${{ github.token }}
+          pr_event_number: ${{ github.event.pull_request.number }}
+
+      - name: Cooldown before attempt 3
+        if: steps.attempt_1.outcome == 'failure' && steps.attempt_2.outcome == 'failure'
+        run: sleep 60
+
+      - name: Build Mirror OS image (attempt 3/3)
+        if: steps.attempt_1.outcome == 'failure' && steps.attempt_2.outcome == 'failure'
+        uses: blue-build/github-action@v1
+        with:
+          recipe: mirror-os.yml
+          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          registry_token: ${{ github.token }}
+          pr_event_number: ${{ github.event.pull_request.number }}
