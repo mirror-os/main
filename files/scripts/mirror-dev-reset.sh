@@ -132,8 +132,7 @@ fi
 # ── COSMIC reset ──────────────────────────────────────────────────────────────
 if $DO_COSMIC; then
     echo "→ Resetting COSMIC desktop settings..."
-    sudo chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/.config/cosmic" 2>/dev/null || true
-    rm -rf "$REAL_HOME/.config/cosmic"
+    sudo rm -rf "$REAL_HOME/.config/cosmic"
     echo "  → COSMIC config cleared. Desktop will return to defaults on next login."
 fi
 
