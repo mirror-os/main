@@ -1,0 +1,12 @@
+[Unit]
+Description=Mirror OS home-manager config change detector
+After=mirror-os-init.service
+
+[Path]
+PathChanged=%h/.config/home-manager/home-user.nix
+PathChanged=%h/.config/home-manager/flake.nix
+PathChanged=%h/.config/home-manager/flake.lock
+MakeDirectory=true
+
+[Install]
+WantedBy=default.target

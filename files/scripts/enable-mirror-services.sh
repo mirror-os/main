@@ -28,4 +28,7 @@ ln -sf /etc/systemd/user/mirror-os-sync.timer \
 ln -sf /etc/systemd/user/mirror-os-apps.path \
     /usr/lib/systemd/user/default.target.wants/mirror-os-apps.path
 
+ln -sf /etc/systemd/user/mirror-os-hm.path \
+    /usr/lib/systemd/user/default.target.wants/mirror-os-hm.path
+
 echo "Mirror OS systemd user units enabled"
