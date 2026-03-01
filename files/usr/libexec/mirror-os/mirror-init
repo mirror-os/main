@@ -86,7 +86,17 @@ for i in $(seq 1 30); do
 done
 nix store info &>/dev/null || die "Nix daemon not responding after 60s"
 
-# ── Step 3: Scaffold home-manager config ───────────────────────────────────
+# ── Step 3: Pre-populate COSMIC config from system defaults ────────────────
+# Copying /usr/share/cosmic/ into ~/.config/cosmic/ before COSMIC's first
+# real login prevents the "first launch" initialisation race that causes
+# a black screen when the config directory is completely absent.
+if [ ! -d "/var/home/$USER/.config/cosmic" ]; then
+    log "Initialising COSMIC config from system defaults..."
+    cp -r /usr/share/cosmic "/var/home/$USER/.config/cosmic"
+    log "COSMIC config initialised"
+fi
+
+# ── Step 4: Scaffold home-manager config ───────────────────────────────────
 if [ ! -d "$HM_CONFIG_DIR" ]; then
     log "Scaffolding home-manager config..."
     mkdir -p "$HM_CONFIG_DIR"
