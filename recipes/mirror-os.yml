@@ -77,6 +77,7 @@ modules:
       - rsms-inter-fonts
       - rsync
       - system-config-printer
+      - zsh
 
   # Remove Firefox shipped in the base image; it is replaced by a Flatpak.
   - type: rpm-ostree

@@ -3,6 +3,9 @@ set -euo pipefail
 
 chmod +x /usr/bin/mirror-dev-reset
 
+# sudoers files must be 0440 (root-readable only) or sudo will refuse them
+chmod 0440 /etc/sudoers.d/mirror-os-chsh
+
 firewall-offline-cmd --add-service=localsend
 
 # Trust the waydroid0 bridge in firewalld so that nftables NAT rules applied

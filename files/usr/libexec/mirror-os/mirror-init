@@ -33,7 +33,24 @@ if [ -f "$DONE_MARKER" ]; then
     exit 0
 fi
 
-# ── Step 2: Install Nix if missing ─────────────────────────────────────────
+# ── Step 2: Set zsh as the default login shell ─────────────────────────────
+# /usr/bin/zsh is baked into the image.  The sudoers drop-in at
+# /etc/sudoers.d/mirror-os-chsh grants passwordless usermod -s for wheel
+# users so this runs non-interactively inside the user service.
+ZSH_BIN="/usr/bin/zsh"
+CURRENT_SHELL=$(getent passwd "$USER" | cut -d: -f7)
+if [ "$CURRENT_SHELL" != "$ZSH_BIN" ]; then
+    log "Setting default shell to zsh..."
+    if sudo /usr/sbin/usermod -s "$ZSH_BIN" "$USER"; then
+        log "Default shell set to $ZSH_BIN"
+    else
+        log "WARNING: Could not set default shell — run manually: sudo usermod -s /usr/bin/zsh $USER"
+    fi
+else
+    log "Default shell is already zsh"
+fi
+
+# ── Step 3: Install Nix if missing ─────────────────────────────────────────
 if ! command -v nix &>/dev/null; then
     log "Installing Nix (Determinate Systems)..."
     curl --proto '=https' --tlsv1.2 -sSf -L "$NIX_INSTALLER_URL" \
