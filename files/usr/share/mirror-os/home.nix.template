@@ -9,7 +9,7 @@
 
   home.username = "__USERNAME__";
   home.homeDirectory = "/var/home/__USERNAME__";
-  home.stateVersion = "24.05";
+  home.stateVersion = "24.11";
 
   programs.home-manager.enable = true;
 
@@ -19,7 +19,15 @@
   # service (waydroid-container.service) is baked into the image separately.
   home.packages = with pkgs; [
     waydroid
+    htop
   ];
+
+  # Hide htop from graphical app launchers — it's a terminal-only tool.
+  xdg.desktopEntries."htop" = {
+    name = "htop";
+    exec = "htop";
+    noDisplay = true;
+  };
 
   # Shell
   programs.zsh = {
@@ -46,8 +54,9 @@
     '';
   };
 
-  # Flatpak remotes
+  # Flatpak remotes — managed declaratively by nix-flatpak
   services.flatpak = {
+    enable = true;
     remotes = [
       { name = "flathub"; location = "https://dl.flathub.org/repo/flathub.flatpakrepo"; }
       { name = "kde"; location = "https://distribute.kde.org/kdeapps.flatpakrepo"; }
