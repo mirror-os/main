@@ -46,12 +46,12 @@
     '';
   };
 
-  # Flatpak remote
+  # Flatpak remotes
   services.flatpak = {
-    remotes = [{
-      name = "flathub";
-      location = "https://dl.flathub.org/repo/flathub.flatpakrepo";
-    }];
+    remotes = [
+      { name = "flathub"; location = "https://dl.flathub.org/repo/flathub.flatpakrepo"; }
+      { name = "kde"; location = "https://distribute.kde.org/kdeapps.flatpakrepo"; }
+    ];
     update = {
       onActivation = false;
       auto = {
