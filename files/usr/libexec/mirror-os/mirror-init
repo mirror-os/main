@@ -22,10 +22,19 @@ log() {
 
 die() {
     log "ERROR: $*"
+    notify "Mirror OS setup failed" "Check the log at ~/.local/share/mirror-os/init.log" "dialog-error"
     exit 1
 }
 
+# notify-send wrapper — works from a systemd user service via the session bus
+notify() {
+    local summary="$1" body="$2" icon="${3:-dialog-information}"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus" \
+        notify-send -a "Mirror OS" -u normal -i "$icon" "$summary" "$body" 2>/dev/null || true
+}
+
 log "=== Mirror OS Init starting (user: $USER) ==="
+notify "Setting up Mirror OS…" "First-time setup is running in the background. This may take a few minutes." "system-software-install"
 
 # ── Step 1: Guard — already done ───────────────────────────────────────────
 if [ -f "$DONE_MARKER" ]; then
@@ -53,6 +62,7 @@ fi
 # ── Step 3: Install Nix if missing ─────────────────────────────────────────
 if ! command -v nix &>/dev/null; then
     log "Installing Nix (Determinate Systems)..."
+    notify "Installing Nix…" "Downloading the Nix package manager. This is the longest step." "system-software-install"
     curl --proto '=https' --tlsv1.2 -sSf -L "$NIX_INSTALLER_URL" \
         | sh -s -- install \
             --no-confirm \
@@ -101,6 +111,7 @@ fi
 
 # ── Step 6: Install blessed apps (minus excluded) ──────────────────────────
 log "Installing blessed apps..."
+notify "Installing apps…" "Setting up your default applications." "system-software-install"
 INSTALLED_APPS=()
 SKIPPED_APPS=()
 
@@ -155,6 +166,7 @@ EOF
 
 # ── Step 8: First home-manager switch ──────────────────────────────────────
 log "Running home-manager switch (first run may take a while)..."
+notify "Finalising setup…" "Configuring your Nix environment. Almost done." "system-software-install"
 cd "$HM_CONFIG_DIR"
 
 HM_CMD="nix run nixpkgs#home-manager --"
@@ -182,3 +194,4 @@ loginctl enable-linger "$USER" && log "Linger enabled for $USER" \
     || log "WARNING: Could not enable linger"
 touch "$DONE_MARKER"
 log "=== Mirror OS Init complete ==="
+notify "Mirror OS is ready!" "Setup complete. Your system is fully configured." "dialog-information"
