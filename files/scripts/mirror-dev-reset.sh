@@ -112,6 +112,7 @@ if $DO_FLATPAKS; then
     # Clear state so mirror-sync reinstalls blessed apps fresh instead of
     # treating the removals above as user-initiated exclusions.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
+    mkdir -p "$REAL_HOME/.config/mirror-os"
     > "$REAL_HOME/.config/mirror-os/excluded-apps.list"
 
     echo "→ Reinstalling blessed apps via mirror-sync..."
