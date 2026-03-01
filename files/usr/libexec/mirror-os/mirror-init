@@ -120,7 +120,18 @@ if [ ! -d "$STATE_DIR/.git" ]; then
     git -C "$STATE_DIR" config user.email "mirror-os@localhost"
 fi
 
-# ── Step 6: Install blessed apps (minus excluded) ──────────────────────────
+# ── Step 6: Ensure Flatpak remotes are available ───────────────────────────
+# The kde remote is needed for KDE Connect. The default-flatpaks module
+# registers it at system level, but it may not be ready yet at this point.
+# Add it explicitly so the install loop below can find all apps.
+if ! flatpak remote-list --system 2>/dev/null | grep -q "^kde"; then
+    log "Adding KDE Flatpak remote..."
+    sudo flatpak remote-add --system --if-not-exists kde \
+        https://distribute.kde.org/kdeapps.flatpakrepo >> "$LOG" 2>&1 || \
+        log "WARNING: Could not add KDE remote"
+fi
+
+# ── Step 7: Install blessed apps (minus excluded) ──────────────────────────
 log "Installing blessed apps..."
 notify "Installing apps…" "Setting up your default applications." "system-software-install"
 INSTALLED_APPS=()

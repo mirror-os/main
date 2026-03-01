@@ -36,7 +36,6 @@
             include: [
                 "com.github.k4zmu2a.spacecadetpinball",
                 "org.gnome.Mahjongg",
-                "org.gnome.Aisleriot",
                 "org.gnome.Sudoku",
                 "org.gnome.TwentyFortyEight",
             ],
