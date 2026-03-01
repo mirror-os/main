@@ -123,6 +123,26 @@ if [ ! -f "$HM_APPS_FILE" ] || [ "$(cat "$HM_APPS_FILE")" != "$NEW_HM_APPS" ]; t
     log "Updated home-mirror-apps.nix"
 fi
 
+# ── Nix config change detection ─────────────────────────────────────────────
+# Hash all user-editable .nix files and flake.lock, excluding home-mirror-apps.nix
+# (which is managed by mirror-sync itself — watching it would cause a trigger loop).
+HM_HASH_FILE="$STATE_DIR/hm-config.hash"
+if [ -d "$HM_CONFIG_DIR" ]; then
+    HM_HASH=$(find "$HM_CONFIG_DIR" \( -name "*.nix" ! -name "home-mirror-apps.nix" \) \
+        -o -name "flake.lock" 2>/dev/null \
+        | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+    if [ -f "$HM_HASH_FILE" ]; then
+        if [ "$HM_HASH" != "$(cat "$HM_HASH_FILE")" ]; then
+            log "Home Manager config files changed"
+            CHANGED=true
+        fi
+    else
+        log "First run: recording Home Manager config hash"
+        CHANGED=true
+    fi
+    echo "$HM_HASH" > "$HM_HASH_FILE"
+fi
+
 # ── home-manager switch ─────────────────────────────────────────────────────
 if [ "$CHANGED" = true ] && [ -d "$HM_CONFIG_DIR" ]; then
     log "Running home-manager switch..."
