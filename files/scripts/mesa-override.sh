@@ -6,10 +6,17 @@ set -euo pipefail
 #
 # --arch=x86_64 prevents dnf from downloading the i686 variant, which has
 # an unresolvable spirv-tools-libs dependency in the container build context.
+#
+# rpmfusion-free-updates-testing is included alongside the stable repos so that
+# when RPM Fusion's stable freeworld build lags behind the base image's mesa
+# version (a few days after each Fedora mesa rebuild), the testing repo is used
+# as a fallback.  The repo is disabled by default in the RPM Fusion release
+# package, so --repo here temporarily enables it only for this download.
 dnf download \
     --arch=x86_64 \
     --repo=rpmfusion-free \
     --repo=rpmfusion-free-updates \
+    --repo=rpmfusion-free-updates-testing \
     --destdir=/tmp/mesa-overrides \
     mesa-va-drivers
 
