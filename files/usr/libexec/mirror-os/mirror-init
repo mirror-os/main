@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Mirror OS First-Boot Initializer
-# Installs Nix, scaffolds Home Manager, installs blessed apps, initialises state git repo.
+# Installs Nix, scaffolds Home Manager, runs first home-manager switch (which
+# installs blessed apps via nix-flatpak), and initialises the state git repo.
 
 set -uo pipefail
 
@@ -10,7 +11,7 @@ NIX_INSTALLER_URL="https://install.determinate.systems/nix"
 HM_CONFIG_DIR="/var/home/$USER/.config/home-manager"
 STATE_DIR="/var/home/$USER/.local/share/mirror-os/state"
 TEMPLATES_DIR="/usr/share/mirror-os"
-BLESSED_APPS="/usr/share/mirror-os/blessed-apps.list"
+APPS_TEMPLATE="/usr/share/mirror-os/home-mirror-apps.nix.template"
 EXCLUDED_APPS="/var/home/$USER/.config/mirror-os/excluded-apps.list"
 
 mkdir -p "$(dirname "$LOG")" "$STATE_DIR" "/var/home/$USER/.config/mirror-os"
@@ -86,7 +87,7 @@ for i in $(seq 1 30); do
 done
 nix store info &>/dev/null || die "Nix daemon not responding after 60s"
 
-# ── Step 3: Pre-populate COSMIC config from system defaults ────────────────
+# ── Step 4: Pre-populate COSMIC config from system defaults ────────────────
 # Copying /usr/share/cosmic/ into ~/.config/cosmic/ before COSMIC's first
 # real login prevents the "first launch" initialisation race that causes
 # a black screen when the config directory is completely absent.
@@ -96,12 +97,21 @@ if [ ! -d "/var/home/$USER/.config/cosmic" ]; then
     log "COSMIC config initialised"
 fi
 
-# ── Step 4: Scaffold home-manager config ───────────────────────────────────
+# ── Step 5: Set global git identity ────────────────────────────────────────
+# Ensures git commits (state repo, home-manager repo) work without user
+# interaction. Only set if the user has not already configured git.
+if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
+    git config --global user.name "$USER"
+    git config --global user.email "$USER@mirror-os.local"
+    log "Set global git identity: $USER <$USER@mirror-os.local>"
+fi
+
+# ── Step 6: Scaffold home-manager config ───────────────────────────────────
 if [ ! -d "$HM_CONFIG_DIR" ]; then
     log "Scaffolding home-manager config..."
     mkdir -p "$HM_CONFIG_DIR"
 
-    for template in flake.nix home.nix home-mirror-apps.nix home-mirror-cosmic.nix home-user.nix; do
+    for template in flake.nix home.nix home-mirror-cosmic.nix home-user.nix; do
         sed "s/__USERNAME__/$USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_CONFIG_DIR/$template"
@@ -112,7 +122,22 @@ else
     log "home-manager config already exists, skipping scaffold"
 fi
 
-# ── Step 4: Initialise state git repo ──────────────────────────────────────
+# ── Step 7: Generate home-mirror-apps.nix from template ────────────────────
+# Filter the blessed-apps template through the excluded-apps list.
+# On first boot there are no exclusions so this is a direct copy.
+# mirror-sync regenerates this file on every run, keeping it up to date
+# as the image is updated and as users exclude apps.
+log "Generating home-mirror-apps.nix from template..."
+while IFS= read -r line; do
+    appid=$(echo "$line" | grep -oP '(?<=appId = ")[^"]+' 2>/dev/null || true)
+    if [ -n "$appid" ] && grep -qx "$appid" "$EXCLUDED_APPS" 2>/dev/null; then
+        continue
+    fi
+    echo "$line"
+done < "$APPS_TEMPLATE" > "$HM_CONFIG_DIR/home-mirror-apps.nix"
+log "home-mirror-apps.nix written"
+
+# ── Step 8: Initialise state git repo ──────────────────────────────────────
 if [ ! -d "$STATE_DIR/.git" ]; then
     log "Initialising state git repository..."
     git -C "$STATE_DIR" init -q
@@ -120,75 +145,11 @@ if [ ! -d "$STATE_DIR/.git" ]; then
     git -C "$STATE_DIR" config user.email "mirror-os@localhost"
 fi
 
-# ── Step 6: Ensure Flatpak remotes are available ───────────────────────────
-# The kde remote is needed for KDE Connect. The default-flatpaks module
-# registers it at system level, but it may not be ready yet at this point.
-# Add it explicitly so the install loop below can find all apps.
-if ! flatpak remote-list --system 2>/dev/null | grep -q "^kde"; then
-    log "Adding KDE Flatpak remote..."
-    sudo flatpak remote-add --system --if-not-exists kde \
-        https://distribute.kde.org/kdeapps.flatpakrepo >> "$LOG" 2>&1 || \
-        log "WARNING: Could not add KDE remote"
-fi
-
-# ── Step 7: Install blessed apps (minus excluded) ──────────────────────────
-log "Installing blessed apps..."
-notify "Installing apps…" "Setting up your default applications." "system-software-install"
-INSTALLED_APPS=()
-SKIPPED_APPS=()
-
-if [ -f "$BLESSED_APPS" ]; then
-    while IFS= read -r app; do
-        [ -z "$app" ] || [[ "$app" == \#* ]] && continue
-
-        if grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
-            log "  SKIP (excluded): $app"
-            SKIPPED_APPS+=("$app")
-            continue
-        fi
-
-        if flatpak list --system --app --columns=application 2>/dev/null | grep -qx "$app"; then
-            log "  SKIP (already installed): $app"
-            continue
-        fi
-
-        log "  Installing: $app"
-        if flatpak install --system -y --noninteractive "$app" >> "$LOG" 2>&1; then
-            INSTALLED_APPS+=("$app")
-        else
-            log "  WARNING: Failed to install $app (will retry on next sync)"
-        fi
-    done < "$BLESSED_APPS"
-fi
-
-log "Blessed apps: ${#INSTALLED_APPS[@]} installed, ${#SKIPPED_APPS[@]} skipped (excluded)"
-
-# ── Step 7: Write initial home-mirror-apps.nix ─────────────────────────────
-log "Writing initial home-mirror-apps.nix..."
-CURRENT_FLATPAKS=$(flatpak list --system --app --columns=application 2>/dev/null | sort)
-MANAGED_APPS=""
-while IFS= read -r app; do
-    [ -z "$app" ] && continue
-    if grep -qx "$app" "$BLESSED_APPS" 2>/dev/null; then
-        MANAGED_APPS="${MANAGED_APPS}    \"${app}\"\n"
-    fi
-done <<< "$CURRENT_FLATPAKS"
-
-cat > "$HM_CONFIG_DIR/home-mirror-apps.nix" << EOF
-# AUTO-MANAGED by Mirror OS — do not edit manually
-# Maintained by mirror-sync. Your changes will be overwritten.
-# To customize apps, edit home-user.nix instead.
-{ ... }:
-
-{
-  services.flatpak.packages = [
-$(echo -e "$MANAGED_APPS")  ];
-}
-EOF
-
-# ── Step 8: First home-manager switch ──────────────────────────────────────
+# ── Step 9: First home-manager switch ──────────────────────────────────────
+# nix-flatpak handles Flatpak remote registration and app installation
+# declaratively as part of this switch.
 log "Running home-manager switch (first run may take a while)..."
-notify "Finalising setup…" "Configuring your Nix environment. Almost done." "system-software-install"
+notify "Installing apps…" "Setting up your default applications via Nix. This may take a while." "system-software-install"
 cd "$HM_CONFIG_DIR"
 
 HM_CMD="nix run nixpkgs#home-manager --"
@@ -199,11 +160,11 @@ else
     log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
 fi
 
-# ── Step 9: Initial git commit ─────────────────────────────────────────────
+# ── Step 10: Initial state git commit ──────────────────────────────────────
 mkdir -p "$STATE_DIR/home-manager"
 cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
-flatpak list --system --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"
-echo "$CURRENT_FLATPAKS" > "$STATE_DIR/flatpak-apps.list"
+flatpak list --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"
+flatpak list --app --columns=application 2>/dev/null | sort > "$STATE_DIR/flatpak-apps.list"
 cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
 
 git -C "$STATE_DIR" add -A
