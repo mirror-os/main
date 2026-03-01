@@ -1,0 +1,10 @@
+# Mirror OS COSMIC desktop integration.
+# cosmic-manager is enabled here as infrastructure for the Mirror OS Software Center.
+# Settings changed in COSMIC Settings are tracked by mirror-sync and will be
+# restorable via the Software Center's visual git history (coming soon).
+# Nothing is declared here intentionally — all COSMIC settings remain user-controlled.
+{ ... }:
+
+{
+  wayland.desktopManager.cosmic.enable = true;
+}

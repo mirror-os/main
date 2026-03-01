@@ -75,6 +75,10 @@ modules:
       - inotify-tools
       - python3
       - rsms-inter-fonts
+      - jetbrains-mono-fonts
+      - google-noto-sans-fonts
+      - google-noto-serif-fonts
+      - google-noto-color-emoji-fonts
       - rsync
       - system-config-printer
       - zsh
