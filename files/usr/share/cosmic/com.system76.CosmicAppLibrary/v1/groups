@@ -30,7 +30,9 @@
         icon: "folder-symbolic",
         filter: Categories(
             categories: ["Game"],
-            exclude: ["com.usebottles.bottles"],
+            exclude: [
+                "com.usebottles.bottles"
+            ],
             include: [
                 "com.github.k4zmu2a.spacecadetpinball",
                 "org.gnome.Mahjongg",
@@ -45,7 +47,9 @@
         icon: "folder-symbolic",
         filter: Categories(
             categories: ["AudioVideo", "Audio", "Video", "Graphics", "2DGraphics"],
-            exclude: [],
+            exclude: [
+                "com.usebottles.bottles",
+            ],
             include: [
                 "org.kde.haruna",
             ],
