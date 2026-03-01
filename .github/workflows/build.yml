@@ -15,10 +15,19 @@ jobs:
       id-token: write
 
     steps:
+      # Wrap the BlueBuild action in a retry harness.
+      # Transient failures (RPM Fusion mirror timeouts, registry blips, etc.)
+      # are retried up to 3 times total with a 60-second cool-down between
+      # attempts.  Genuine build errors (bad recipe, script failures) will
+      # fail all attempts and surface the same exit-code as before.
       - name: Build Mirror OS image
-        uses: blue-build/github-action@v1
+        uses: Wandalen/wretry.action@v3
         with:
-          recipe: mirror-os.yml
-          cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          registry_token: ${{ github.token }}
-          pr_event_number: ${{ github.event.number }}
+          action: blue-build/github-action@v1
+          with: |
+            recipe: mirror-os.yml
+            cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+            registry_token: ${{ github.token }}
+            pr_event_number: ${{ github.event.number }}
+          attempt_limit: 3
+          attempt_delay: 60000
