@@ -12,4 +12,6 @@
 
   # Example: override a setting from home.nix
   # programs.zsh.oh-my-zsh.theme = "agnoster";
+
+
 }

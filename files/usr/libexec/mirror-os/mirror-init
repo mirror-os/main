@@ -80,7 +80,7 @@ if [ ! -d "$HM_CONFIG_DIR" ]; then
     log "Scaffolding home-manager config..."
     mkdir -p "$HM_CONFIG_DIR"
 
-    for template in flake.nix home.nix home-mirror-apps.nix home-user.nix; do
+    for template in flake.nix home.nix home-mirror-apps.nix home-mirror-cosmic.nix home-user.nix; do
         sed "s/__USERNAME__/$USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_CONFIG_DIR/$template"

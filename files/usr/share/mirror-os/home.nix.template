@@ -3,6 +3,7 @@
 {
   imports = [
     ./home-mirror-apps.nix
+    ./home-mirror-cosmic.nix
     ./home-user.nix
   ];
 
