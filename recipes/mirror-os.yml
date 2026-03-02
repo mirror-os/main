@@ -116,8 +116,11 @@ modules:
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
 
-  # Register Flatpak remotes on first boot for all users.
-  # No app installs here — all Flatpaks are managed declaratively via nix-flatpak in Home Manager.
+  # Register Flatpak remotes and install default apps at system scope on first boot.
+  # Apps installed here are available to all users and persist across rebases.
+  # Users can exclude individual apps — mirror-sync tracks removals and
+  # re-applies exclusions after an image rebase reinstalls them.
+  # User-added apps are managed via nix-flatpak in home-user.nix (user scope).
   - type: default-flatpaks
     configurations:
       - scope: system
@@ -125,11 +128,37 @@ modules:
         repo:
           url: https://dl.flathub.org/repo/flathub.flatpakrepo
           name: flathub
+        packages:
+          # Browsers
+          - app.zen_browser.zen
+          # Media
+          - org.kde.haruna
+          - org.gnome.Loupe
+          # Communication
+          - org.gnome.Geary
+          - org.localsend.localsend_app
+          # Office
+          - org.onlyoffice.desktopeditors
+          - org.gnome.Calendar
+          # Utilities
+          - org.gnome.Calculator
+          - com.github.tchx84.Flatseal
+          - it.mijorus.gearlever
+          - io.github.dvlv.boxbuddyrs
+          - com.usebottles.bottles
+          # Games
+          - com.github.k4zmu2a.spacecadetpinball
+          - org.gnome.Mahjongg
+          - org.gnome.Sudoku
+          - org.gnome.TwentyFortyEight
       - scope: system
         notify: false
         repo:
           url: https://distribute.kde.org/kdeapps.flatpakrepo
           name: kde
+        packages:
+          # Device sync
+          - org.kde.kdeconnect
 
   # Fix file permissions that the files module does not preserve:
   # mirror-dev-reset needs +x; sudoers drop-in needs 0440 (sudo refuses it

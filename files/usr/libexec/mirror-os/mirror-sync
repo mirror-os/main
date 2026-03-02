@@ -10,7 +10,7 @@ export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
 LOG="$HOME/.local/share/mirror-os/sync.log"
 STATE_DIR="$HOME/.local/share/mirror-os/state"
 HM_CONFIG_DIR="$HOME/.config/home-manager"
-APPS_TEMPLATE="/usr/share/mirror-os/home-mirror-apps.nix.template"
+DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 EXCLUDED_APPS="$HOME/.config/mirror-os/excluded-apps.list"
 INIT_DONE="$HOME/.local/share/mirror-os/.init-complete"
 ALLOWLIST="/usr/share/mirror-os/flatpak-allowlist.toml"
@@ -56,11 +56,11 @@ if [ -f "$LAST_APPS_FILE" ]; then
     if [ -n "$REMOVED" ]; then
         while IFS= read -r app; do
             [ -z "$app" ] && continue
-            # Check if this is a blessed app (declared in the template)
-            if grep -q "appId = \"$app\"" "$APPS_TEMPLATE" 2>/dev/null; then
+            # Check if this is a default app (declared in the image default list)
+            if grep -qx "$app" "$DEFAULT_APPS_LIST" 2>/dev/null; then
                 if ! grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
                     echo "$app" >> "$EXCLUDED_APPS"
-                    log "User removed blessed app: $app → added to excluded list"
+                    log "User removed default app: $app → added to excluded list"
                     CHANGED=true
                 fi
             fi
@@ -80,11 +80,28 @@ if [ -f "$LAST_APPS_FILE" ]; then
     fi
 fi
 
-# ── Detect image update (template hash changes) ─────────────────────────────
-# When a new image is rebased, system templates may have changed.
-# Detect each by hashing and comparing with the stored hash.
+# ── Re-apply exclusions ──────────────────────────────────────────────────────
+# After an image rebase, default apps are reinstalled system-scope by uBuild.
+# Ensure any apps the user has excluded are removed again.
+if [ -f "$DEFAULT_APPS_LIST" ] && [ -s "$EXCLUDED_APPS" ]; then
+    while IFS= read -r excl; do
+        [ -z "$excl" ] && continue
+        if grep -qx "$excl" "$DEFAULT_APPS_LIST" 2>/dev/null; then
+            if flatpak list --system --app --columns=application 2>/dev/null | grep -qx "$excl"; then
+                log "Re-applying exclusion: removing default app $excl from system scope"
+                if sudo flatpak uninstall --system --noninteractive "$excl" >> "$LOG" 2>&1; then
+                    log "Removed $excl (excluded by user)"
+                    CHANGED=true
+                else
+                    log "WARNING: Could not remove $excl from system scope"
+                fi
+            fi
+        fi
+    done < "$EXCLUDED_APPS"
+fi
 
-# home.nix.template — core HM config (flatpak remotes, programs.git, etc.)
+# ── Detect image update (home.nix.template hash changes) ────────────────────
+# When a new image is rebased, home.nix.template may have changed.
 # home.nix is a system-managed file; user customisations belong in home-user.nix.
 HOME_NIX_TEMPLATE="/usr/share/mirror-os/home.nix.template"
 HOME_NIX_TEMPLATE_HASH_FILE="$STATE_DIR/home-nix-template.hash"
@@ -99,42 +116,12 @@ if [ -n "$HOME_NIX_TEMPLATE_HASH" ]; then
     fi
 fi
 
-# home-mirror-apps.nix.template — blessed app list
-TEMPLATE_HASH_FILE="$STATE_DIR/home-mirror-apps-template.hash"
-TEMPLATE_HASH=$(sha256sum "$APPS_TEMPLATE" 2>/dev/null | cut -d' ' -f1 || echo "")
-if [ -n "$TEMPLATE_HASH" ]; then
-    if [ ! -f "$TEMPLATE_HASH_FILE" ] || [ "$TEMPLATE_HASH" != "$(cat "$TEMPLATE_HASH_FILE")" ]; then
-        log "Apps template changed — image update detected, regenerating app list"
-        echo "$TEMPLATE_HASH" > "$TEMPLATE_HASH_FILE"
-        CHANGED=true
-    fi
-fi
-
-# ── Generate home-mirror-apps.nix from template ─────────────────────────────
-# Filter the blessed-apps template through the excluded-apps list and write
-# the result to home-mirror-apps.nix. nix-flatpak then installs/removes apps
-# to match this declaration on the next home-manager switch.
-HM_APPS_FILE="$HM_CONFIG_DIR/home-mirror-apps.nix"
-NEW_HM_APPS=$(while IFS= read -r line; do
-    appid=$(echo "$line" | grep -oP '(?<=appId = ")[^"]+' 2>/dev/null || true)
-    if [ -n "$appid" ] && grep -qx "$appid" "$EXCLUDED_APPS" 2>/dev/null; then
-        continue
-    fi
-    echo "$line"
-done < "$APPS_TEMPLATE")
-
-if [ ! -f "$HM_APPS_FILE" ] || [ "$(cat "$HM_APPS_FILE")" != "$NEW_HM_APPS" ]; then
-    echo "$NEW_HM_APPS" > "$HM_APPS_FILE"
-    CHANGED=true
-    log "Updated home-mirror-apps.nix"
-fi
-
 # ── Nix config change detection ─────────────────────────────────────────────
-# Hash all user-editable .nix files and flake.lock, excluding home-mirror-apps.nix
-# (which is managed by mirror-sync itself — watching it would cause a trigger loop).
+# Hash all user-editable .nix files and flake.lock to detect changes that
+# require a home-manager switch.
 HM_HASH_FILE="$STATE_DIR/hm-config.hash"
 if [ -d "$HM_CONFIG_DIR" ]; then
-    HM_HASH=$(find "$HM_CONFIG_DIR" \( -name "*.nix" ! -name "home-mirror-apps.nix" \) \
+    HM_HASH=$(find "$HM_CONFIG_DIR" \( -name "*.nix" \) \
         -o -name "flake.lock" 2>/dev/null \
         | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
     if [ -f "$HM_HASH_FILE" ]; then

@@ -1,0 +1,6 @@
+# Allow wheel group members to remove system-scope Flatpak apps without a
+# password prompt.  Used by mirror-sync to re-apply per-user exclusions after
+# an image rebase reinstalls default apps at system scope.
+# Scoped to the exact uninstall invocation used by mirror-sync — no broader
+# sudo privileges are granted.
+%wheel ALL=(root) NOPASSWD: /usr/bin/flatpak uninstall --system --noninteractive *
