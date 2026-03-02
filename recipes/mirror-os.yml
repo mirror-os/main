@@ -93,6 +93,16 @@ modules:
       - firefox
       - firefox-langpacks
 
+  # Install Waydroid (Android container runtime) from the upstream COPR.
+  # Installing via RPM rather than Nix keeps the container service at the
+  # system level where it belongs and avoids the need for custom D-Bus
+  # policy/activation files (the RPM ships them).
+  - type: rpm-ostree
+    repos:
+      - https://copr.fedorainfracloud.org/coprs/g/waydroid/waydroid/repo/fedora-%OS_VERSION%/group_waydroid-waydroid-fedora-%OS_VERSION%.repo
+    install:
+      - waydroid
+
   # Copy configuration files into the image.
   # Source paths are relative to the repository's files/ directory.
   - type: files

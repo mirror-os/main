@@ -8,6 +8,7 @@ Wants=network.target
 
 [Service]
 Type=simple
+BusName=id.waydro.Container
 Restart=on-failure
 RestartSec=5
 
@@ -15,10 +16,8 @@ RestartSec=5
 # hardware acceleration is not lost to a software fallback after reboots.
 ExecStartPre=/usr/libexec/mirror-os/waydroid-prestart.sh
 
-# Discover the waydroid binary from whichever Nix Home Manager profile is
-# present (MirrorOS installs waydroid via Home Manager, not system-wide RPMs).
-ExecStart=/usr/libexec/mirror-os/waydroid-run container start
-ExecStop=/usr/libexec/mirror-os/waydroid-run container stop
+ExecStart=/usr/bin/waydroid container start
+ExecStop=/usr/bin/waydroid container stop
 
 # cgroups v2 delegation: hand the service's cgroup subtree to the LXC
 # container so Android can manage its own process hierarchy.
