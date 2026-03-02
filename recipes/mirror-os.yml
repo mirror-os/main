@@ -99,7 +99,7 @@ modules:
   # policy/activation files (the RPM ships them).
   - type: rpm-ostree
     repos:
-      - https://copr.fedorainfracloud.org/coprs/g/waydroid/waydroid/repo/fedora-%OS_VERSION%/group_waydroid-waydroid-fedora-%OS_VERSION%.repo
+      - https://copr.fedorainfracloud.org/coprs/aleasto/waydroid/repo/fedora-%OS_VERSION%/aleasto-waydroid-fedora-%OS_VERSION%.repo
     install:
       - waydroid
 
