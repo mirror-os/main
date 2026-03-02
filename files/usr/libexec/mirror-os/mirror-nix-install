@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Mirror OS Nix Installer
+# Runs the Determinate Nix Installer as root.
+# Called by mirror-init via passwordless sudo so the user service can install
+# Nix without requiring an interactive terminal.
+# This script must remain simple and auditable — do not add logic here.
+
+set -uo pipefail
+
+curl --proto '=https' --tlsv1.2 -sSf -L "https://install.determinate.systems/nix" \
+    | sh -s -- install \
+        --no-confirm \
+        --extra-conf "experimental-features = nix-command flakes"
