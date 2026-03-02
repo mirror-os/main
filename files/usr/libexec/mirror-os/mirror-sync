@@ -80,9 +80,26 @@ if [ -f "$LAST_APPS_FILE" ]; then
     fi
 fi
 
-# ── Detect image update (template hash change) ──────────────────────────────
-# When a new image is rebased, the apps template may contain new blessed apps.
-# Detect this by hashing the template and comparing with the stored hash.
+# ── Detect image update (template hash changes) ─────────────────────────────
+# When a new image is rebased, system templates may have changed.
+# Detect each by hashing and comparing with the stored hash.
+
+# home.nix.template — core HM config (flatpak remotes, programs.git, etc.)
+# home.nix is a system-managed file; user customisations belong in home-user.nix.
+HOME_NIX_TEMPLATE="/usr/share/mirror-os/home.nix.template"
+HOME_NIX_TEMPLATE_HASH_FILE="$STATE_DIR/home-nix-template.hash"
+HOME_NIX_TEMPLATE_HASH=$(sha256sum "$HOME_NIX_TEMPLATE" 2>/dev/null | cut -d' ' -f1 || echo "")
+if [ -n "$HOME_NIX_TEMPLATE_HASH" ]; then
+    if [ ! -f "$HOME_NIX_TEMPLATE_HASH_FILE" ] || \
+       [ "$HOME_NIX_TEMPLATE_HASH" != "$(cat "$HOME_NIX_TEMPLATE_HASH_FILE")" ]; then
+        log "home.nix template changed — regenerating home.nix from updated image template"
+        sed "s/__USERNAME__/$USER/g" "$HOME_NIX_TEMPLATE" > "$HM_CONFIG_DIR/home.nix"
+        echo "$HOME_NIX_TEMPLATE_HASH" > "$HOME_NIX_TEMPLATE_HASH_FILE"
+        CHANGED=true
+    fi
+fi
+
+# home-mirror-apps.nix.template — blessed app list
 TEMPLATE_HASH_FILE="$STATE_DIR/home-mirror-apps-template.hash"
 TEMPLATE_HASH=$(sha256sum "$APPS_TEMPLATE" 2>/dev/null | cut -d' ' -f1 || echo "")
 if [ -n "$TEMPLATE_HASH" ]; then
