@@ -116,7 +116,8 @@ modules:
       - source: usr/share/cosmic/
         destination: /usr/share/cosmic/
 
-  # Register Flatpak remotes and install default apps at system scope on first boot.
+  # Register Flathub and install default apps at system scope on first boot.
+  # All apps come from Flathub (including KDE Connect, which is published there).
   # Apps installed here are available to all users and persist across rebases.
   # Users can exclude individual apps — mirror-sync tracks removals and
   # re-applies exclusions after an image rebase reinstalls them.
@@ -137,6 +138,7 @@ modules:
           # Communication
           - org.gnome.Geary
           - org.localsend.localsend_app
+          - org.kde.kdeconnect
           # Office
           - org.onlyoffice.desktopeditors
           - org.gnome.Calendar
@@ -151,14 +153,6 @@ modules:
           - org.gnome.Mahjongg
           - org.gnome.Sudoku
           - org.gnome.TwentyFortyEight
-      - scope: system
-        notify: false
-        repo:
-          url: https://distribute.kde.org/kdeapps.flatpakrepo
-          name: kde
-        packages:
-          # Device sync
-          - org.kde.kdeconnect
 
   # Fix file permissions that the files module does not preserve:
   # mirror-dev-reset needs +x; sudoers drop-in needs 0440 (sudo refuses it
