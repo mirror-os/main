@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Mirror OS First-Boot Initializer
-# Installs Nix, scaffolds Home Manager, runs first home-manager switch (which
-# installs blessed apps via nix-flatpak), and initialises the state git repo.
+# Installs Nix, scaffolds Home Manager, runs first home-manager switch, and
+# initialises the state git repo.
+# Default Flatpak apps are installed system-scope by uBuild's default-flatpaks
+# module; this script does not manage Flatpak installation.
 
 set -uo pipefail
 
@@ -11,7 +13,6 @@ NIX_INSTALLER_URL="https://install.determinate.systems/nix"
 HM_CONFIG_DIR="/var/home/$USER/.config/home-manager"
 STATE_DIR="/var/home/$USER/.local/share/mirror-os/state"
 TEMPLATES_DIR="/usr/share/mirror-os"
-APPS_TEMPLATE="/usr/share/mirror-os/home-mirror-apps.nix.template"
 EXCLUDED_APPS="/var/home/$USER/.config/mirror-os/excluded-apps.list"
 
 mkdir -p "$(dirname "$LOG")" "$STATE_DIR" "/var/home/$USER/.config/mirror-os"
@@ -122,25 +123,10 @@ else
     log "home-manager config already exists, skipping scaffold"
 fi
 
-# ── Step 7: Generate home-mirror-apps.nix from template ────────────────────
-# Filter the blessed-apps template through the excluded-apps list.
-# On first boot there are no exclusions so this is a direct copy.
-# mirror-sync regenerates this file on every run, keeping it up to date
-# as the image is updated and as users exclude apps.
-log "Generating home-mirror-apps.nix from template..."
-while IFS= read -r line; do
-    appid=$(echo "$line" | grep -oP '(?<=appId = ")[^"]+' 2>/dev/null || true)
-    if [ -n "$appid" ] && grep -qx "$appid" "$EXCLUDED_APPS" 2>/dev/null; then
-        continue
-    fi
-    echo "$line"
-done < "$APPS_TEMPLATE" > "$HM_CONFIG_DIR/home-mirror-apps.nix"
-log "home-mirror-apps.nix written"
-
-# ── Step 7b: Ensure HM config dir is a git repo with all files tracked ─────
+# ── Step 7: Ensure HM config dir is a git repo with all files tracked ──────
 # Nix flake evaluation only sees files that git knows about (committed or
 # staged). If the directory is not a repo yet, or files were generated without
-# being staged, the switch at step 9 would fail with "path does not exist in
+# being staged, the switch at step 8 would fail with "path does not exist in
 # Git repository".
 if [ ! -d "$HM_CONFIG_DIR/.git" ]; then
     git -C "$HM_CONFIG_DIR" init -b main -q
@@ -162,10 +148,10 @@ if [ ! -d "$STATE_DIR/.git" ]; then
 fi
 
 # ── Step 9: First home-manager switch ──────────────────────────────────────
-# nix-flatpak handles Flatpak remote registration and app installation
-# declaratively as part of this switch.
+# nix-flatpak applies global Flatpak overrides (GTK/icon theme) as part of
+# this switch. Default apps are managed by uBuild, not nix-flatpak.
 log "Running home-manager switch (first run may take a while)..."
-notify "Installing apps…" "Setting up your default applications via Nix. This may take a while." "system-software-install"
+notify "Configuring your environment…" "Setting up Home Manager. This may take a while." "system-software-install"
 cd "$HM_CONFIG_DIR"
 
 HM_CMD="nix run nixpkgs#home-manager --"

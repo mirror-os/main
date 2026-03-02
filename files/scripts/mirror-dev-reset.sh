@@ -11,7 +11,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
-    echo "  --flatpaks  Remove all Flatpaks and reinstall blessed apps"
+    echo "  --flatpaks  Remove all Flatpaks and reinstall default apps"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
     echo "  --full      All of the above"
@@ -51,7 +51,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "The following will be reset:"
 if $DO_HM;       then echo "  - Home Manager config and generations"; fi
-if $DO_FLATPAKS; then echo "  - All Flatpaks (blessed apps will be reinstalled)"; fi
+if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps will be reinstalled)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
 if $DO_INIT;     then echo "  - Init marker (mirror-init will re-run on next boot)"; fi
 echo ""
@@ -63,6 +63,7 @@ REAL_USER=$(id -un)
 REAL_HOME="$HOME"
 TEMPLATES_DIR="/usr/share/mirror-os"
 HM_DEST="$REAL_HOME/.config/home-manager"
+DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 
 NIX_PROFILE="/nix/var/nix/profiles/default/etc/profile.d/nix.sh"
 # shellcheck source=/dev/null
@@ -75,7 +76,7 @@ if $DO_HM; then
     rm -rf "$HM_DEST"
     mkdir -p "$HM_DEST"
 
-    for template in flake.nix home.nix home-mirror-apps.nix home-mirror-cosmic.nix home-user.nix; do
+    for template in flake.nix home.nix home-mirror-cosmic.nix home-user.nix; do
         sed "s/__USERNAME__/$REAL_USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_DEST/$template"
@@ -109,24 +110,27 @@ if $DO_FLATPAKS; then
     flatpak list --user --app --columns=application 2>/dev/null \
         | xargs -r flatpak uninstall --user -y --noninteractive || true
 
-    # Clear state so mirror-sync reinstalls blessed apps fresh instead of
-    # treating the removals above as user-initiated exclusions.
+    # Clear state so exclusion tracking starts fresh.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
     mkdir -p "$REAL_HOME/.config/mirror-os"
     > "$REAL_HOME/.config/mirror-os/excluded-apps.list"
 
-    echo "→ Reinstalling blessed apps via mirror-sync..."
-    systemctl --user start mirror-os-sync.service 2>/dev/null || true
-    echo "  → Blessed apps are installing in the background."
-    WATCH_CMD="journalctl --user -u mirror-os-sync.service -f"
-    if command -v cosmic-term &>/dev/null; then
-        cosmic-term -- sh -c "$WATCH_CMD" &
-    elif command -v gnome-terminal &>/dev/null; then
-        gnome-terminal -- sh -c "$WATCH_CMD" &
-    elif command -v xterm &>/dev/null; then
-        xterm -e sh -c "$WATCH_CMD" &
+    # Reinstall default apps at system scope from the authoritative list.
+    # On a production system this happens automatically via uBuild's
+    # default-flatpaks module on first boot after a rebase; this step
+    # replicates that for development resets without requiring a rebase.
+    echo "→ Reinstalling default apps at system scope..."
+    if [ -f "$DEFAULT_APPS_LIST" ]; then
+        while IFS= read -r appid; do
+            # Skip blank lines and comments
+            [[ -z "$appid" || "$appid" == \#* ]] && continue
+            echo "  → Installing $appid..."
+            sudo flatpak install --system --noninteractive --or-update "$appid" 2>/dev/null || \
+                echo "  → WARNING: Could not install $appid (check flatpak remotes)"
+        done < "$DEFAULT_APPS_LIST"
+        echo "  → Default apps reinstalled."
     else
-        echo "  → Check progress with: $WATCH_CMD"
+        echo "  → WARNING: $DEFAULT_APPS_LIST not found; default apps not reinstalled."
     fi
 fi
 

@@ -2,7 +2,6 @@
 
 {
   imports = [
-    ./home-mirror-apps.nix
     ./home-mirror-cosmic.nix
     ./home-user.nix
   ];
@@ -78,13 +77,12 @@
     iconTheme.name = "Papirus-Dark";
   };
 
-  # Flatpak — remotes and global overrides managed declaratively by nix-flatpak
+  # Flatpak — global overrides for consistent theming across all Flatpak apps.
+  # Default apps are installed system-scope by the image via uBuild default-flatpaks;
+  # they do not need to be declared here.
+  # Users can add their own apps via services.flatpak.packages in home-user.nix.
   services.flatpak = {
     enable = true;
-    remotes = [
-      { name = "flathub"; location = "https://dl.flathub.org/repo/flathub.flatpakrepo"; }
-      { name = "kde"; location = "https://distribute.kde.org/kdeapps.flatpakrepo"; }
-    ];
     update = {
       onActivation = false;
       auto = {
