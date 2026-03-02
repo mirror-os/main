@@ -17,8 +17,10 @@
   # uses for the state repo.  Users can override in home-user.nix.
   programs.git = {
     enable = true;
-    userName = "__USERNAME__";
-    userEmail = "__USERNAME__@mirror-os.local";
+    settings.user = {
+      name = "__USERNAME__";
+      email = "__USERNAME__@mirror-os.local";
+    };
   };
 
   # Default packages — installed for every user on first login.
@@ -40,6 +42,9 @@
   # Shell
   programs.zsh = {
     enable = true;
+    # Adopt XDG config directory now to avoid a breaking default change in a
+    # future Home Manager release.  Zsh files will live in ~/.config/zsh/.
+    dotDir = ".config/zsh";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     oh-my-zsh = {
