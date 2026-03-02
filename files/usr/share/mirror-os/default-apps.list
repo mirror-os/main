@@ -16,7 +16,6 @@ org.gnome.Loupe
 # Communication
 org.gnome.Geary
 org.localsend.localsend_app
-org.kde.kdeconnect
 
 # Office
 org.onlyoffice.desktopeditors
