@@ -1,0 +1,7 @@
+# Jekyll configuration for GitHub Pages
+# Exclude the image build tree — it contains symlinks with absolute target
+# paths that only exist inside the OS image, causing the Jekyll build to fail.
+exclude:
+  - files/
+  - recipes/
+  - dev-docs/
