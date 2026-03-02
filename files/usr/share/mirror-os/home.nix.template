@@ -54,7 +54,7 @@
     # First-run Waydroid init: prompt for sudo on the very first waydroid
     # invocation.  Uses the full resolved binary path so sudo's restricted
     # PATH does not hide the Nix-installed binary.
-    initExtra = ''
+    initContent = ''
       waydroid() {
         if ! [ -d /var/lib/waydroid/images ]; then
           printf '\nWaydroid needs a one-time setup to download the Android image.\n'

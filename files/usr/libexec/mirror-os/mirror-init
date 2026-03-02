@@ -9,7 +9,6 @@ set -uo pipefail
 
 LOG="/var/home/$USER/.local/share/mirror-os/init.log"
 DONE_MARKER="/var/home/$USER/.local/share/mirror-os/.init-complete"
-NIX_INSTALLER_URL="https://install.determinate.systems/nix"
 HM_CONFIG_DIR="/var/home/$USER/.config/home-manager"
 STATE_DIR="/var/home/$USER/.local/share/mirror-os/state"
 TEMPLATES_DIR="/usr/share/mirror-os"
@@ -66,11 +65,12 @@ fi
 if ! command -v nix &>/dev/null; then
     log "Installing Nix (Determinate Systems)..."
     notify "Installing Nix…" "Downloading the Nix package manager. This is the longest step." "system-software-install"
-    curl --proto '=https' --tlsv1.2 -sSf -L "$NIX_INSTALLER_URL" \
-        | sh -s -- install \
-            --no-confirm \
-            --extra-conf "experimental-features = nix-command flakes" \
-        >> "$LOG" 2>&1 || die "Nix installation failed"
+    # Run the installer as root via a dedicated wrapper script.
+    # mirror-init runs as a user service with no terminal, so we cannot use an
+    # interactive sudo prompt.  The sudoers drop-in at
+    # /etc/sudoers.d/mirror-os-nix-install grants passwordless sudo for this
+    # specific script only.
+    sudo /usr/libexec/mirror-os/mirror-nix-install >> "$LOG" 2>&1 || die "Nix installation failed"
 
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
