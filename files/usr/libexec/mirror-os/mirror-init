@@ -137,6 +137,22 @@ while IFS= read -r line; do
 done < "$APPS_TEMPLATE" > "$HM_CONFIG_DIR/home-mirror-apps.nix"
 log "home-mirror-apps.nix written"
 
+# ── Step 7b: Ensure HM config dir is a git repo with all files tracked ─────
+# Nix flake evaluation only sees files that git knows about (committed or
+# staged). If the directory is not a repo yet, or files were generated without
+# being staged, the switch at step 9 would fail with "path does not exist in
+# Git repository".
+if [ ! -d "$HM_CONFIG_DIR/.git" ]; then
+    git -C "$HM_CONFIG_DIR" init -b main -q
+    git -C "$HM_CONFIG_DIR" config user.name "Mirror OS"
+    git -C "$HM_CONFIG_DIR" config user.email "mirror-os@localhost"
+    log "Initialised git repo in home-manager config dir"
+fi
+git -C "$HM_CONFIG_DIR" add -A -q
+git -C "$HM_CONFIG_DIR" \
+    commit -m "init: scaffold from image templates $(date '+%Y-%m-%d')" -q \
+    2>/dev/null || true
+
 # ── Step 8: Initialise state git repo ──────────────────────────────────────
 if [ ! -d "$STATE_DIR/.git" ]; then
     log "Initialising state git repository..."
