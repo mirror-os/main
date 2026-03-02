@@ -117,7 +117,7 @@ modules:
         destination: /usr/share/cosmic/
 
   # Register Flathub and install default apps at system scope on first boot.
-  # All apps come from Flathub (including KDE Connect, which is published there).
+  # All apps come from Flathub.
   # Apps installed here are available to all users and persist across rebases.
   # Users can exclude individual apps — mirror-sync tracks removals and
   # re-applies exclusions after an image rebase reinstalls them.
@@ -138,7 +138,6 @@ modules:
           # Communication
           - org.gnome.Geary
           - org.localsend.localsend_app
-          - org.kde.kdeconnect
           # Office
           - org.onlyoffice.desktopeditors
           - org.gnome.Calendar
