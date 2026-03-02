@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ExecStartPre script for waydroid-container.service.
-# Patches the waydroid base props file with GBM/Mesa GPU settings so that
-# hardware acceleration is never lost to a software fallback after a reboot.
+# ExecStartPre drop-in script for waydroid-container.service.
+# Patches waydroid_base.prop with the correct GPU and udev settings before
+# every container start, so values are never lost after a reboot.
 # Runs as root; exits 0 silently if waydroid has not been initialised yet.
 
 set -eo pipefail
@@ -11,11 +11,12 @@ PROPS="/var/lib/waydroid/waydroid_base.prop"
 # Nothing to do until waydroid init has been run
 [ -f "$PROPS" ] || exit 0
 
-# Remove any existing gralloc/egl lines, then append the GBM/Mesa values.
-# Using delete-then-append avoids sed in-place edge cases and guarantees
-# the desired values are always present regardless of prior state.
+# GPU: minigbm_gbm_mesa gralloc and Mesa EGL backend (matches Bazzite/upstream)
 sed -i '/^ro\.hardware\.gralloc=/d' "$PROPS"
 sed -i '/^ro\.hardware\.egl=/d'     "$PROPS"
+printf 'ro.hardware.gralloc=minigbm_gbm_mesa\n' >> "$PROPS"
+printf 'ro.hardware.egl=mesa\n'                 >> "$PROPS"
 
-printf 'ro.hardware.gralloc=gbm\n' >> "$PROPS"
-printf 'ro.hardware.egl=mesa\n'    >> "$PROPS"
+# udev/uevent: required for input devices and hotplug to work inside the container
+grep -qxF 'persist.waydroid.udev=true'   "$PROPS" || printf 'persist.waydroid.udev=true\n'   >> "$PROPS"
+grep -qxF 'persist.waydroid.uevent=true' "$PROPS" || printf 'persist.waydroid.uevent=true\n' >> "$PROPS"
