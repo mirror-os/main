@@ -10,17 +10,21 @@ usage() {
     echo "Usage: mirror-dev-reset [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "  --nix       Wipe Nix user profile and garbage-collect the store"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
     echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-init"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
-    echo "  --full      All of the above"
+    echo "  --full      All of the above (virgin system)"
     echo "  --help      Show this message"
     echo ""
     echo "No arguments: equivalent to --hm --flatpaks --cosmic"
+    echo ""
+    echo "Typical full reset: mirror-dev-reset --nix --hm --flatpaks --cosmic --init"
 }
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
+DO_NIX=false
 DO_HM=false
 DO_FLATPAKS=false
 DO_COSMIC=false
@@ -34,11 +38,12 @@ fi
 
 for arg in "$@"; do
     case "$arg" in
+        --nix)      DO_NIX=true ;;
         --hm)       DO_HM=true ;;
         --flatpaks) DO_FLATPAKS=true ;;
         --cosmic)   DO_COSMIC=true ;;
         --init)     DO_INIT=true ;;
-        --full)     DO_HM=true; DO_FLATPAKS=true; DO_COSMIC=true; DO_INIT=true ;;
+        --full)     DO_NIX=true; DO_HM=true; DO_FLATPAKS=true; DO_COSMIC=true; DO_INIT=true ;;
         --help|-h)  usage; exit 0 ;;
         *)          echo "Unknown argument: $arg"; usage; exit 1 ;;
     esac
@@ -50,6 +55,7 @@ echo "WARNING: Mirror OS Development Reset"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "The following will be reset:"
+if $DO_NIX;      then echo "  - Nix user profile and store (garbage-collect all old packages)"; fi
 if $DO_HM;       then echo "  - Home Manager config and generations"; fi
 if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-init)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
@@ -68,6 +74,31 @@ NIX_PROFILE="/nix/var/nix/profiles/default/etc/profile.d/nix.sh"
 # shellcheck source=/dev/null
 source "$NIX_PROFILE"
 export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
+
+# ── Nix user profile reset ────────────────────────────────────────────────────
+# Runs before --hm so the store is clean before home-manager switch rebuilds it.
+if $DO_NIX; then
+    echo "→ Wiping Nix user profile..."
+
+    # Expire all home-manager generations so GC can collect their store paths.
+    home-manager expire-generations "-0 days" 2>/dev/null || true
+
+    # Remove all entries from the standalone Nix user profile (e.g. anything
+    # installed directly via 'nix profile install' outside of home-manager).
+    nix profile wipe-history 2>/dev/null || true
+
+    # Collect garbage: this is the step that actually deletes store paths freed
+    # by expire-generations and wipe-history.  Without it, old packages
+    # (including stale Waydroid versions) remain on disk indefinitely.
+    echo "  → Running garbage collection (may take a moment)..."
+    nix-collect-garbage -d 2>/dev/null || true
+
+    # Remove the profile symlink so home-manager switch starts with a blank
+    # slate rather than layering on top of whatever was previously active.
+    rm -f "$REAL_HOME/.nix-profile"
+
+    echo "  → Nix user profile wiped."
+fi
 
 # ── Home Manager reset ────────────────────────────────────────────────────────
 if $DO_HM; then
@@ -109,8 +140,6 @@ if $DO_FLATPAKS; then
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
 
     # Reset the init stamp so mirror-init reinstalls default apps on next boot.
-    # mirror-init is idempotent: Nix and HM scaffold are skipped if already
-    # complete — only the Flatpak install step will actually run.
     rm -f "$REAL_HOME/.local/share/mirror-os/.init-complete"
     echo "  → Default apps will be reinstalled by mirror-init on next boot."
 fi

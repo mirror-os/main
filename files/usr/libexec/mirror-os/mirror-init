@@ -2,7 +2,7 @@
 # Mirror OS First-Boot Initializer
 # Installs Nix, scaffolds Home Manager, runs first home-manager switch, and
 # initialises the state git repo.
-# Default Flatpak apps are installed user-scope in Step 9 below; this only
+# Default Flatpak apps are installed system-scope in Step 9 below; this only
 # runs once, so the user's app state is preserved across OS updates.
 
 set -uo pipefail
@@ -15,6 +15,15 @@ TEMPLATES_DIR="/usr/share/mirror-os"
 DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 
 mkdir -p "$(dirname "$LOG")" "$STATE_DIR"
+
+# Bring Nix into PATH if it is already installed.
+# Without this, 'command -v nix' fails in the minimal PATH of a systemd user
+# service, causing mirror-init to attempt a reinstall on every re-run after
+# mirror-dev-reset --init.  The Determinate Systems installer refuses to run
+# when Nix is already present, which triggers die "Nix installation failed".
+if [ -x /nix/var/nix/profiles/default/bin/nix ]; then
+    export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
+fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
@@ -147,27 +156,20 @@ if [ ! -d "$STATE_DIR/.git" ]; then
 fi
 
 # ── Step 9: Install default Flatpak apps ───────────────────────────────────
-# Installed at user scope — no sudo required, and each user gets their own
-# copy managed in their home directory.  Because mirror-init only runs once
-# (guarded by the stamp above), these apps are never reinstalled by subsequent
-# OS updates.  The user's Flatpak state is fully preserved across rebases.
+# Installed at system scope via a dedicated wrapper script so mirror-init can
+# use the immutable Flathub remote registered by the image (default-flatpaks
+# module).  System scope requires root; the sudoers drop-in at
+# /etc/sudoers.d/mirror-os-flatpak-install grants passwordless sudo for this
+# specific wrapper only.  Because mirror-init only runs once (guarded by the
+# stamp above), these apps are never reinstalled by subsequent OS updates.
 if [ -f "$DEFAULT_APPS_LIST" ]; then
-    log "Installing default Flatpak apps (user scope)..."
+    log "Installing default Flatpak apps (system scope)..."
     notify "Installing apps…" "Setting up your default apps. Almost done." "system-software-install"
-    while IFS= read -r appid; do
-        [[ -z "$appid" || "$appid" == \#* ]] && continue
-        if flatpak list --user --app --columns=application 2>/dev/null | grep -qx "$appid"; then
-            log "Already installed: $appid"
-            continue
-        fi
-        log "Installing $appid..."
-        if flatpak install --user --noninteractive flathub "$appid" >> "$LOG" 2>&1; then
-            log "Installed: $appid"
-        else
-            log "WARNING: Could not install $appid"
-        fi
-    done < "$DEFAULT_APPS_LIST"
-    log "Default apps installed"
+    if sudo /usr/libexec/mirror-os/mirror-flatpak-install >> "$LOG" 2>&1; then
+        log "Default apps installed"
+    else
+        log "WARNING: Some default apps could not be installed"
+    fi
 fi
 
 # ── Step 10: First home-manager switch ─────────────────────────────────────

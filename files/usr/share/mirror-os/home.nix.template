@@ -22,12 +22,10 @@
     };
   };
 
-  # Default packages — installed for every user on first login.
-  # Waydroid is here because it is not available as a Flatpak; the Nix package
-  # provides the waydroid CLI and session tools.  The system-level container
-  # service (waydroid-container.service) is baked into the image separately.
+  # Default packages — terminal tools that have no Flatpak equivalent.
+  # Waydroid is installed as an RPM via BlueBuild (not here) so the container
+  # service and D-Bus policy from the upstream package are used unchanged.
   home.packages = with pkgs; [
-    waydroid
     htop
   ];
 
@@ -52,8 +50,8 @@
       plugins = [ "git" "sudo" "history" "dirhistory" ];
     };
     # First-run Waydroid init: prompt for sudo on the very first waydroid
-    # invocation.  Uses the full resolved binary path so sudo's restricted
-    # PATH does not hide the Nix-installed binary.
+    # invocation.  Waydroid is installed as an RPM so the binary is always
+    # at /usr/bin/waydroid; command -v resolves it for sudo's restricted PATH.
     initContent = ''
       waydroid() {
         if ! [ -d /var/lib/waydroid/images ]; then
@@ -78,7 +76,7 @@
   };
 
   # Flatpak — global overrides for consistent theming across all Flatpak apps.
-  # Default apps are installed user-scope by mirror-init on first login only
+  # Default apps are installed system-scope by mirror-init on first login only
   # and are never reinstalled by subsequent OS updates.
   # Users can add their own apps via services.flatpak.packages in home-user.nix.
   services.flatpak = {
