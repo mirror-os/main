@@ -10,15 +10,12 @@ export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
 LOG="$HOME/.local/share/mirror-os/sync.log"
 STATE_DIR="$HOME/.local/share/mirror-os/state"
 HM_CONFIG_DIR="$HOME/.config/home-manager"
-DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
-EXCLUDED_APPS="$HOME/.config/mirror-os/excluded-apps.list"
 INIT_DONE="$HOME/.local/share/mirror-os/.init-complete"
 ALLOWLIST="/usr/share/mirror-os/flatpak-allowlist.toml"
 SETTINGS_SNAPSHOT_DIR="$STATE_DIR/flatpak-settings"
 FLATPAK_DATA_DIR="$HOME/.var/app"
 
-mkdir -p "$STATE_DIR" "$(dirname "$LOG")" "$HOME/.config/mirror-os"
-touch "$EXCLUDED_APPS"
+mkdir -p "$STATE_DIR" "$(dirname "$LOG")"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
@@ -41,64 +38,11 @@ fi
 
 log "=== Mirror OS Sync starting ==="
 
-# ── App tracking ────────────────────────────────────────────────────────────
-# Track both user and system installs so we catch removals regardless of level.
+# ── App state snapshot ───────────────────────────────────────────────────────
+# Record the current Flatpak list for git history. Default apps are installed
+# once by mirror-init and never managed here.
 CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
-LAST_APPS_FILE="$STATE_DIR/flatpak-apps.list"
 CHANGED=false
-
-if [ -f "$LAST_APPS_FILE" ]; then
-    LAST_APPS=$(cat "$LAST_APPS_FILE")
-
-    REMOVED=$(comm -23 <(echo "$LAST_APPS") <(echo "$CURRENT_APPS") 2>/dev/null || true)
-    ADDED=$(comm -13 <(echo "$LAST_APPS") <(echo "$CURRENT_APPS") 2>/dev/null || true)
-
-    if [ -n "$REMOVED" ]; then
-        while IFS= read -r app; do
-            [ -z "$app" ] && continue
-            # Check if this is a default app (declared in the image default list)
-            if grep -qx "$app" "$DEFAULT_APPS_LIST" 2>/dev/null; then
-                if ! grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
-                    echo "$app" >> "$EXCLUDED_APPS"
-                    log "User removed default app: $app → added to excluded list"
-                    CHANGED=true
-                fi
-            fi
-        done <<< "$REMOVED"
-    fi
-
-    if [ -n "$ADDED" ]; then
-        while IFS= read -r app; do
-            [ -z "$app" ] && continue
-            if grep -qx "$app" "$EXCLUDED_APPS" 2>/dev/null; then
-                grep -v "^${app}$" "$EXCLUDED_APPS" > "${EXCLUDED_APPS}.tmp" && \
-                    mv "${EXCLUDED_APPS}.tmp" "$EXCLUDED_APPS"
-                log "User reinstalled excluded app: $app → removed from excluded list"
-                CHANGED=true
-            fi
-        done <<< "$ADDED"
-    fi
-fi
-
-# ── Re-apply exclusions ──────────────────────────────────────────────────────
-# After an image rebase, default apps are reinstalled system-scope by uBuild.
-# Ensure any apps the user has excluded are removed again.
-if [ -f "$DEFAULT_APPS_LIST" ] && [ -s "$EXCLUDED_APPS" ]; then
-    while IFS= read -r excl; do
-        [ -z "$excl" ] && continue
-        if grep -qx "$excl" "$DEFAULT_APPS_LIST" 2>/dev/null; then
-            if flatpak list --system --app --columns=application 2>/dev/null | grep -qx "$excl"; then
-                log "Re-applying exclusion: removing default app $excl from system scope"
-                if sudo flatpak uninstall --system --noninteractive "$excl" >> "$LOG" 2>&1; then
-                    log "Removed $excl (excluded by user)"
-                    CHANGED=true
-                else
-                    log "WARNING: Could not remove $excl from system scope"
-                fi
-            fi
-        fi
-    done < "$EXCLUDED_APPS"
-fi
 
 # ── Detect image update (home.nix.template hash changes) ────────────────────
 # When a new image is rebased, home.nix.template may have changed.
@@ -311,7 +255,6 @@ sync_flatpak_settings() {
 echo "$CURRENT_APPS" > "$STATE_DIR/flatpak-apps.list"
 flatpak list --app --columns=application,version,branch 2>/dev/null > \
     "$STATE_DIR/flatpak-full.list"
-cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
 
 mkdir -p "$STATE_DIR/home-manager"
 cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true

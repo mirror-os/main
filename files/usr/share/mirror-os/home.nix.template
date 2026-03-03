@@ -78,8 +78,8 @@
   };
 
   # Flatpak — global overrides for consistent theming across all Flatpak apps.
-  # Default apps are installed system-scope by the image via uBuild default-flatpaks;
-  # they do not need to be declared here.
+  # Default apps are installed user-scope by mirror-init on first login only
+  # and are never reinstalled by subsequent OS updates.
   # Users can add their own apps via services.flatpak.packages in home-user.nix.
   services.flatpak = {
     enable = true;
