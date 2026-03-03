@@ -1,6 +1,6 @@
 [Unit]
 Description=Mirror OS First-Boot Initialization
-After=network-online.target
+After=graphical-session.target network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/home/%u/.local/share/mirror-os/.init-complete
 
@@ -12,4 +12,4 @@ StandardError=journal
 TimeoutStartSec=1800
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
