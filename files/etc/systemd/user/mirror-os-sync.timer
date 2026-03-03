@@ -3,7 +3,7 @@ Description=Mirror OS hourly state sync
 After=mirror-os-init.service
 
 [Timer]
-OnBootSec=30s
+OnBootSec=300s
 OnCalendar=*:00:00
 Persistent=true
 

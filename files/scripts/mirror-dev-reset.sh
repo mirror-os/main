@@ -113,8 +113,8 @@ if $DO_HM; then
     done
 
     git -C "$HM_DEST" init -b main
-    git -C "$HM_DEST" config user.email "user@mirror-os.local"
-    git -C "$HM_DEST" config user.name "Mirror OS User"
+    git -C "$HM_DEST" config user.email "$REAL_USER@mirror-os.local"
+    git -C "$HM_DEST" config user.name "$REAL_USER"
     git -C "$HM_DEST" add .
     git -C "$HM_DEST" commit -m "initial"
 

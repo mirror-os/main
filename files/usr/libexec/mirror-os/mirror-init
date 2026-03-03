@@ -138,8 +138,8 @@ fi
 # Git repository".
 if [ ! -d "$HM_CONFIG_DIR/.git" ]; then
     git -C "$HM_CONFIG_DIR" init -b main -q
-    git -C "$HM_CONFIG_DIR" config user.name "Mirror OS"
-    git -C "$HM_CONFIG_DIR" config user.email "mirror-os@localhost"
+    git -C "$HM_CONFIG_DIR" config user.name "$USER"
+    git -C "$HM_CONFIG_DIR" config user.email "$USER@mirror-os.local"
     log "Initialised git repo in home-manager config dir"
 fi
 git -C "$HM_CONFIG_DIR" add -A -q
@@ -151,8 +151,8 @@ git -C "$HM_CONFIG_DIR" \
 if [ ! -d "$STATE_DIR/.git" ]; then
     log "Initialising state git repository..."
     git -C "$STATE_DIR" init -q
-    git -C "$STATE_DIR" config user.name "Mirror OS"
-    git -C "$STATE_DIR" config user.email "mirror-os@localhost"
+    git -C "$STATE_DIR" config user.name "$USER"
+    git -C "$STATE_DIR" config user.email "$USER@mirror-os.local"
 fi
 
 # ── Step 9: Install default Flatpak apps ───────────────────────────────────
@@ -198,9 +198,6 @@ git -C "$STATE_DIR" commit -m "init: Mirror OS first boot $(date '+%Y-%m-%d %H:%
     >> "$LOG" 2>&1 || true
 
 # ── Done ───────────────────────────────────────────────────────────────────
-# Enable linger so user services start at boot without requiring login
-loginctl enable-linger "$USER" && log "Linger enabled for $USER" \
-    || log "WARNING: Could not enable linger"
 touch "$DONE_MARKER"
 log "=== Mirror OS Init complete ==="
 notify "Mirror OS is ready!" "Setup complete. Your system is fully configured." "dialog-information"
