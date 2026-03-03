@@ -127,8 +127,8 @@ modules:
         destination: /usr/share/cosmic/
 
   # Register the Flathub remote at system scope.
-  # Default apps are NOT installed here — mirror-init installs them at user
-  # scope on first login only and never reinstalls them on subsequent updates.
+  # Default apps are NOT installed here — mirror-os-flatpak-init.service installs
+  # them at system scope before the display manager on first boot only.
   # User-added apps are managed via nix-flatpak in home-user.nix.
   - type: default-flatpaks
     configurations:

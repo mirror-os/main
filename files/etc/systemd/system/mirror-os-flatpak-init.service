@@ -1,0 +1,16 @@
+[Unit]
+Description=Mirror OS Default Flatpak App Installation
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/mirror-os/.flatpaks-installed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/mirror-os/mirror-flatpak-install
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

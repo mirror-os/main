@@ -12,7 +12,7 @@ usage() {
     echo "Options:"
     echo "  --nix       Wipe Nix user profile and garbage-collect the store"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
-    echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-init"
+    echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-os-flatpak-init.service"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
     echo "  --full      All of the above (virgin system)"
@@ -57,7 +57,7 @@ echo ""
 echo "The following will be reset:"
 if $DO_NIX;      then echo "  - Nix user profile and store (garbage-collect all old packages)"; fi
 if $DO_HM;       then echo "  - Home Manager config and generations"; fi
-if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-init)"; fi
+if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-os-flatpak-init.service)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
 if $DO_INIT;     then echo "  - Init marker (mirror-init will re-run on next boot)"; fi
 echo ""
@@ -139,9 +139,9 @@ if $DO_FLATPAKS; then
     # Clear Flatpak state so the git history starts fresh.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
 
-    # Reset the init stamp so mirror-init reinstalls default apps on next boot.
-    rm -f "$REAL_HOME/.local/share/mirror-os/.init-complete"
-    echo "  → Default apps will be reinstalled by mirror-init on next boot."
+    # Reset the system stamp so mirror-os-flatpak-init.service reinstalls default apps on next boot.
+    sudo rm -f /var/lib/mirror-os/.flatpaks-installed
+    echo "  → Default apps will be reinstalled by mirror-os-flatpak-init.service on next boot."
 fi
 
 # ── COSMIC reset ──────────────────────────────────────────────────────────────
