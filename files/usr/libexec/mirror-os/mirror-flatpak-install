@@ -13,6 +13,10 @@ DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 
 while IFS= read -r appid; do
     [[ -z "$appid" || "$appid" == \#* ]] && continue
+    if flatpak list --system --app --columns=application 2>/dev/null | grep -qx "$appid"; then
+        echo "Already installed (system): $appid"
+        continue
+    fi
     flatpak install --system --noninteractive flathub "$appid" 2>&1 || \
         echo "WARNING: Could not install $appid" >&2
 done < "$DEFAULT_APPS_LIST"
