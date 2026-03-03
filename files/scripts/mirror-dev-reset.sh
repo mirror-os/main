@@ -102,16 +102,9 @@ fi
 
 # ── Flatpak reset ─────────────────────────────────────────────────────────────
 if $DO_FLATPAKS; then
-    # Clean up any system-scope apps left over from the old architecture.
-    if flatpak list --system --app --columns=application 2>/dev/null | grep -q .; then
-        echo "→ Removing system-scope Flatpak apps (requires sudo)..."
-        flatpak list --system --app --columns=application 2>/dev/null \
-            | xargs -r sudo flatpak uninstall --system -y --noninteractive || true
-    fi
-
-    echo "→ Removing all user Flatpak apps..."
-    flatpak list --user --app --columns=application 2>/dev/null \
-        | xargs -r flatpak uninstall --user -y --noninteractive || true
+    echo "→ Removing all Flatpak apps (system and user scope)..."
+    sudo flatpak uninstall --system --all --noninteractive 2>/dev/null || true
+    flatpak uninstall --user --all --noninteractive 2>/dev/null || true
 
     # Clear Flatpak state so the git history starts fresh.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
