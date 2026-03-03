@@ -59,6 +59,38 @@ patterns = [
 ]
 
 [[app]]
+id = "app.zen_browser.zen"
+# Zen is Firefox-based (not Chromium).  Profile lives under .zen/ and mirrors
+# Firefox's layout exactly.  Add the same .js and .mozlz4 files that Firefox
+# needs (not matched by global patterns) and deny the same WAL/large dirs.
+extra_allow = [
+    "**/chrome/userChrome.css",
+    "**/chrome/userContent.css",
+    "**/prefs.js",
+    "**/user.js",
+    "**/search.json.mozlz4",
+    "**/extensions.json",
+    "**/extension-preferences.json",
+]
+extra_deny = [
+    "**/places.sqlite-wal",
+    "**/places.sqlite-shm",
+    "**/favicons.sqlite*",
+    "**/storage/**",
+    "**/startupCache/**",
+    "**/safebrowsing/**",
+]
+
+[[app]]
+id = "com.usebottles.bottles"
+# Bottle configs (.yml) and program lists (.json) are covered by the global
+# allow rules and are worth backing up.  Deny drive_c explicitly: a Windows
+# prefix contains hundreds of .ini files that would be matched by **/*.ini.
+extra_deny = [
+    "**/drive_c/**",
+]
+
+[[app]]
 id = "org.mozilla.firefox"
 extra_deny = [
     "**/places.sqlite-wal",
@@ -129,6 +161,9 @@ extra_allow = [
     "**/autotext/**",
     "**/template/**",
     "**/wordbook/**",
+    "**/palettes/**",
+    "**/gallery/**",
+    "**/extension/**",
 ]
 extra_deny = [
     "**/backup/**",
@@ -146,6 +181,6 @@ extra_allow = [
 
 [[app]]
 id = "io.missioncenter.MissionCenter"
-extra_allow = [
-    "**/settings.json",
-]
+# Settings are stored at config/glib-2.0/settings/keyfile (no extension).
+# The global **/config/** allow rule already captures this path — no extra
+# patterns needed.  Entry kept as documentation of the actual storage location.
