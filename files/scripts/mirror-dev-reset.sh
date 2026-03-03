@@ -102,30 +102,29 @@ fi
 
 # ── Flatpak reset ─────────────────────────────────────────────────────────────
 if $DO_FLATPAKS; then
-    echo "→ Removing all system Flatpak apps (requires sudo)..."
-    flatpak list --system --app --columns=application 2>/dev/null \
-        | xargs -r sudo flatpak uninstall --system -y --noninteractive || true
+    # Clean up any system-scope apps left over from the old architecture.
+    if flatpak list --system --app --columns=application 2>/dev/null | grep -q .; then
+        echo "→ Removing system-scope Flatpak apps (requires sudo)..."
+        flatpak list --system --app --columns=application 2>/dev/null \
+            | xargs -r sudo flatpak uninstall --system -y --noninteractive || true
+    fi
 
     echo "→ Removing all user Flatpak apps..."
     flatpak list --user --app --columns=application 2>/dev/null \
         | xargs -r flatpak uninstall --user -y --noninteractive || true
 
-    # Clear state so exclusion tracking starts fresh.
+    # Clear Flatpak state so the git history starts fresh.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
-    mkdir -p "$REAL_HOME/.config/mirror-os"
-    > "$REAL_HOME/.config/mirror-os/excluded-apps.list"
 
-    # Reinstall default apps at system scope from the authoritative list.
-    # On a production system this happens automatically via uBuild's
-    # default-flatpaks module on first boot after a rebase; this step
-    # replicates that for development resets without requiring a rebase.
-    echo "→ Reinstalling default apps at system scope..."
+    # Reinstall default apps at user scope (mirrors what mirror-init does on
+    # first boot). Explicit 'flathub' remote prevents ambiguity when multiple
+    # remotes are registered.
+    echo "→ Reinstalling default apps at user scope..."
     if [ -f "$DEFAULT_APPS_LIST" ]; then
         while IFS= read -r appid; do
-            # Skip blank lines and comments
             [[ -z "$appid" || "$appid" == \#* ]] && continue
             echo "  → Installing $appid..."
-            sudo flatpak install --system --noninteractive --or-update "$appid" 2>/dev/null || \
+            flatpak install --user --noninteractive flathub "$appid" || \
                 echo "  → WARNING: Could not install $appid (check flatpak remotes)"
         done < "$DEFAULT_APPS_LIST"
         echo "  → Default apps reinstalled."

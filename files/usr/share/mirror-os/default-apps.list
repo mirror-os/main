@@ -1,10 +1,8 @@
-# Mirror OS default Flatpak apps — installed system-scope by the image.
-# This list is the runtime source of truth used by mirror-sync to:
-#   • detect when a user removes a default app (add to excluded-apps.list)
-#   • re-apply exclusions after an image rebase reinstalls apps
+# Mirror OS default Flatpak apps — installed user-scope by mirror-init on first login.
+# These apps are installed once and never reinstalled by subsequent OS updates.
+# New apps added here will be offered to existing users via the update
+# notification system (planned feature).
 # One Flatpak application ID per line. Lines starting with # are ignored.
-# To add or remove default apps, update recipes/mirror-os.yml and keep this
-# list in sync.
 
 # Browsers
 app.zen_browser.zen

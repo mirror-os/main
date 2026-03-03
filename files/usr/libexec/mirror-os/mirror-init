@@ -2,8 +2,8 @@
 # Mirror OS First-Boot Initializer
 # Installs Nix, scaffolds Home Manager, runs first home-manager switch, and
 # initialises the state git repo.
-# Default Flatpak apps are installed system-scope by uBuild's default-flatpaks
-# module; this script does not manage Flatpak installation.
+# Default Flatpak apps are installed user-scope in Step 9 below; this only
+# runs once, so the user's app state is preserved across OS updates.
 
 set -uo pipefail
 
@@ -12,10 +12,9 @@ DONE_MARKER="/var/home/$USER/.local/share/mirror-os/.init-complete"
 HM_CONFIG_DIR="/var/home/$USER/.config/home-manager"
 STATE_DIR="/var/home/$USER/.local/share/mirror-os/state"
 TEMPLATES_DIR="/usr/share/mirror-os"
-EXCLUDED_APPS="/var/home/$USER/.config/mirror-os/excluded-apps.list"
+DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 
-mkdir -p "$(dirname "$LOG")" "$STATE_DIR" "/var/home/$USER/.config/mirror-os"
-touch "$EXCLUDED_APPS"
+mkdir -p "$(dirname "$LOG")" "$STATE_DIR"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
@@ -147,9 +146,33 @@ if [ ! -d "$STATE_DIR/.git" ]; then
     git -C "$STATE_DIR" config user.email "mirror-os@localhost"
 fi
 
-# ── Step 9: First home-manager switch ──────────────────────────────────────
+# ── Step 9: Install default Flatpak apps ───────────────────────────────────
+# Installed at user scope — no sudo required, and each user gets their own
+# copy managed in their home directory.  Because mirror-init only runs once
+# (guarded by the stamp above), these apps are never reinstalled by subsequent
+# OS updates.  The user's Flatpak state is fully preserved across rebases.
+if [ -f "$DEFAULT_APPS_LIST" ]; then
+    log "Installing default Flatpak apps (user scope)..."
+    notify "Installing apps…" "Setting up your default apps. Almost done." "system-software-install"
+    while IFS= read -r appid; do
+        [[ -z "$appid" || "$appid" == \#* ]] && continue
+        if flatpak list --user --app --columns=application 2>/dev/null | grep -qx "$appid"; then
+            log "Already installed: $appid"
+            continue
+        fi
+        log "Installing $appid..."
+        if flatpak install --user --noninteractive flathub "$appid" >> "$LOG" 2>&1; then
+            log "Installed: $appid"
+        else
+            log "WARNING: Could not install $appid"
+        fi
+    done < "$DEFAULT_APPS_LIST"
+    log "Default apps installed"
+fi
+
+# ── Step 10: First home-manager switch ─────────────────────────────────────
 # nix-flatpak applies global Flatpak overrides (GTK/icon theme) as part of
-# this switch. Default apps are managed by uBuild, not nix-flatpak.
+# this switch. Default apps are managed by mirror-init (above), not nix-flatpak.
 log "Running home-manager switch (first run may take a while)..."
 notify "Configuring your environment…" "Setting up Home Manager. This may take a while." "system-software-install"
 cd "$HM_CONFIG_DIR"
@@ -162,12 +185,11 @@ else
     log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
 fi
 
-# ── Step 10: Initial state git commit ──────────────────────────────────────
+# ── Step 11: Initial state git commit ──────────────────────────────────────
 mkdir -p "$STATE_DIR/home-manager"
 cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
 flatpak list --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"
 flatpak list --app --columns=application 2>/dev/null | sort > "$STATE_DIR/flatpak-apps.list"
-cp "$EXCLUDED_APPS" "$STATE_DIR/excluded-apps.list" 2>/dev/null || true
 
 git -C "$STATE_DIR" add -A
 git -C "$STATE_DIR" commit -m "init: Mirror OS first boot $(date '+%Y-%m-%d %H:%M:%S')" \
