@@ -6,7 +6,6 @@ chmod +x /usr/libexec/mirror-os/mirror-nix-install
 
 # sudoers files must be 0440 (root-readable only) or sudo will refuse them
 chmod 0440 /etc/sudoers.d/mirror-os-chsh
-chmod 0440 /etc/sudoers.d/mirror-os-flatpak
 chmod 0440 /etc/sudoers.d/mirror-os-nix-install
 
 firewall-offline-cmd --add-service=localsend
