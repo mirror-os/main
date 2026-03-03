@@ -11,7 +11,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
-    echo "  --flatpaks  Remove all Flatpaks and reinstall default apps"
+    echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-init"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
     echo "  --full      All of the above"
@@ -51,7 +51,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "The following will be reset:"
 if $DO_HM;       then echo "  - Home Manager config and generations"; fi
-if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps will be reinstalled)"; fi
+if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-init)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
 if $DO_INIT;     then echo "  - Init marker (mirror-init will re-run on next boot)"; fi
 echo ""
@@ -63,7 +63,6 @@ REAL_USER=$(id -un)
 REAL_HOME="$HOME"
 TEMPLATES_DIR="/usr/share/mirror-os"
 HM_DEST="$REAL_HOME/.config/home-manager"
-DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
 
 NIX_PROFILE="/nix/var/nix/profiles/default/etc/profile.d/nix.sh"
 # shellcheck source=/dev/null
@@ -103,27 +102,17 @@ fi
 # ── Flatpak reset ─────────────────────────────────────────────────────────────
 if $DO_FLATPAKS; then
     echo "→ Removing all Flatpak apps (system and user scope)..."
-    sudo flatpak uninstall --system --all --noninteractive 2>/dev/null || true
-    flatpak uninstall --user --all --noninteractive 2>/dev/null || true
+    sudo flatpak uninstall --system --all --noninteractive || true
+    flatpak uninstall --user --all --noninteractive || true
 
     # Clear Flatpak state so the git history starts fresh.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
 
-    # Reinstall default apps at user scope (mirrors what mirror-init does on
-    # first boot). Explicit 'flathub' remote prevents ambiguity when multiple
-    # remotes are registered.
-    echo "→ Reinstalling default apps at user scope..."
-    if [ -f "$DEFAULT_APPS_LIST" ]; then
-        while IFS= read -r appid; do
-            [[ -z "$appid" || "$appid" == \#* ]] && continue
-            echo "  → Installing $appid..."
-            flatpak install --user --noninteractive flathub "$appid" || \
-                echo "  → WARNING: Could not install $appid (check flatpak remotes)"
-        done < "$DEFAULT_APPS_LIST"
-        echo "  → Default apps reinstalled."
-    else
-        echo "  → WARNING: $DEFAULT_APPS_LIST not found; default apps not reinstalled."
-    fi
+    # Reset the init stamp so mirror-init reinstalls default apps on next boot.
+    # mirror-init is idempotent: Nix and HM scaffold are skipped if already
+    # complete — only the Flatpak install step will actually run.
+    rm -f "$REAL_HOME/.local/share/mirror-os/.init-complete"
+    echo "  → Default apps will be reinstalled by mirror-init on next boot."
 fi
 
 # ── COSMIC reset ──────────────────────────────────────────────────────────────
