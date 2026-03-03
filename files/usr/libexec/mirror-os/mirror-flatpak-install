@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Mirror OS Default Flatpak Installer
 # Installs default apps at system scope from the Flathub remote.
-# Called by mirror-init via passwordless sudo so the user service can install
-# system-scope Flatpaks without requiring an interactive terminal.
+# Called by mirror-os-flatpak-init.service as root on first boot, before the
+# display manager starts.  Runs only once — writes a stamp on completion so
+# the service is skipped on every subsequent boot.
 # This script must remain simple and auditable — do not add logic here.
 
 set -uo pipefail
 
 DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
+STAMP="/var/lib/mirror-os/.flatpaks-installed"
 
 [ -f "$DEFAULT_APPS_LIST" ] || exit 0
+
+mkdir -p /var/lib/mirror-os
 
 while IFS= read -r appid; do
     [[ -z "$appid" || "$appid" == \#* ]] && continue
@@ -20,3 +24,5 @@ while IFS= read -r appid; do
     flatpak install --system --noninteractive flathub "$appid" 2>&1 || \
         echo "WARNING: Could not install $appid" >&2
 done < "$DEFAULT_APPS_LIST"
+
+touch "$STAMP"

@@ -1,5 +1,0 @@
-# Allow wheel group members to run the Mirror OS Flatpak installer as root without
-# a password prompt.  Required because mirror-init runs as a systemd user service
-# which has no terminal for sudo to prompt on.
-# Scoped to the exact wrapper script — no broader sudo privileges are granted.
-%wheel ALL=(root) NOPASSWD: /usr/libexec/mirror-os/mirror-flatpak-install
