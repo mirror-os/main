@@ -64,38 +64,15 @@
     '';
   };
 
-  # GTK theme and icon theme for native (non-Flatpak) GTK3/GTK4 apps.
-  # Both packages are baked into the image via RPM (adw-gtk3-theme, papirus-icon-theme)
-  # so no Nix package is needed here.
-  # package = null tells home-manager to use the system-installed theme.
-  # Light-mode users can override in home-user.nix with adw-gtk3 / Papirus-Light.
-  gtk = {
-    enable = true;
-    theme.name = "adw-gtk3-dark";
-    iconTheme.name = "Papirus-Dark";
-  };
-
-  # Flatpak — global overrides for consistent theming across all Flatpak apps.
-  # Default apps are installed system-scope by mirror-init on first login only
-  # and are never reinstalled by subsequent OS updates.
-  # Users can add their own apps via services.flatpak.packages in home-user.nix.
-  services.flatpak = {
-    enable = true;
-    update = {
-      onActivation = false;
-      auto = {
-        enable = false;
-      };
-    };
-    # Make all Flatpak apps use the system GTK and icon themes so they match
-    # the COSMIC desktop. adw-gtk3-dark and Papirus-Dark are baked into the image.
-    # Note: these are fixed to the dark variants; light-mode users can override
-    # via home-user.nix with adw-gtk3 / Papirus-Light.
-    overrides.global = {
-      Environment = {
-        GTK_THEME = "adw-gtk3-dark";
-        ICON_THEME = "Papirus-Dark";
-      };
-    };
-  };
+  # Flatpak — global icon theme override so all Flatpak apps use a consistent icon set.
+  # Written declaratively as a file to avoid nix-flatpak's managed-install service,
+  # which sends noisy "Installing 0 Flatpaks" notifications on every activation.
+  # GTK_THEME is intentionally omitted: GTK4/libadwaita Flatpak apps follow the
+  # color-scheme portal automatically, adapting to COSMIC's dark/light setting.
+  # Papirus (without a -Dark/-Light suffix) works in both modes.
+  # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix.
+  home.file.".local/share/flatpak/overrides/global".text = ''
+    [Environment]
+    ICON_THEME=Papirus
+  '';
 }
