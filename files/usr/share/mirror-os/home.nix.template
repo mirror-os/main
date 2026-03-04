@@ -63,14 +63,41 @@
     '';
   };
 
-  # Flatpak — global icon theme override so all Flatpak apps use a consistent icon set.
+  # GTK3 theme for native (non-Flatpak) GTK3 apps.
+  # adw-gtk3-theme is baked into the image as an RPM; package = null tells
+  # Home Manager not to try to install it from Nixpkgs.
+  gtk = {
+    enable = true;
+    theme = {
+      name = "adw-gtk3-dark";
+      package = null;
+    };
+  };
+
+  # Route the xdg-desktop-portal Settings interface through xdg-desktop-portal-gtk
+  # so GTK4/Libadwaita Flatpak apps receive the color-scheme preference.
+  # xdg-desktop-portal-cosmic does not implement the Settings portal; the gtk
+  # backend reads from org.gnome.desktop.interface:color-scheme, which COSMIC
+  # already keeps up to date. All other portal interfaces remain on COSMIC.
+  home.file.".config/xdg-desktop-portal/portals.conf".text = ''
+    [preferred]
+    default=cosmic
+    org.freedesktop.impl.portal.Settings=gtk
+  '';
+
+  # Flatpak — global overrides for theming and window decorations.
   # Written declaratively as a file to avoid nix-flatpak's managed-install service,
   # which sends noisy "Installing 0 Flatpaks" notifications on every activation.
-  # GTK_THEME is intentionally omitted: GTK4/libadwaita Flatpak apps follow the
-  # color-scheme portal automatically, adapting to COSMIC's dark/light setting.
   # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix.
+  #
+  # GTK_THEME=adw-gtk3-dark  — forces dark mode for GTK3 Flatpak apps (GTK4/
+  #   Libadwaita apps use the color-scheme portal instead and ignore this).
+  # GTK_CSD=0                — tells GTK3 apps to request server-side decorations
+  #   from COSMIC rather than drawing their own title bars.
   home.file.".local/share/flatpak/overrides/global".text = ''
     [Environment]
+    GTK_THEME=adw-gtk3-dark
+    GTK_CSD=0
     ICON_THEME=Breeze
   '';
 }
