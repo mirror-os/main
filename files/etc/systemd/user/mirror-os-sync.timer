@@ -1,6 +1,5 @@
 [Unit]
 Description=Mirror OS hourly state sync
-After=mirror-os-init.service
 
 [Timer]
 OnBootSec=300s

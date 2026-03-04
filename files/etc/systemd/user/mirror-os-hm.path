@@ -1,6 +1,5 @@
 [Unit]
 Description=Mirror OS home-manager config change detector
-After=mirror-os-init.service
 
 [Path]
 PathChanged=%h/.config/home-manager/home-user.nix

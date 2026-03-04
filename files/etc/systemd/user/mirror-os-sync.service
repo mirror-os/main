@@ -1,7 +1,7 @@
 [Unit]
 Description=Mirror OS State Sync
 After=mirror-os-init.service
-Requires=mirror-os-init.service
+Wants=mirror-os-init.service
 
 [Service]
 Type=oneshot
