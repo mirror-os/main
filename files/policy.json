@@ -1,5 +1,5 @@
 {
-  "default": [{"type": "reject"}],
+  "default": [{"type": "insecureAcceptAnything"}],
   "transports": {
     "docker": {
       "ghcr.io/mirror-os/mirror-os": [
