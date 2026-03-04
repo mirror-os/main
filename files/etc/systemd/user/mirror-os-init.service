@@ -5,7 +5,7 @@ Wants=network-online.target
 ConditionPathExists=!/var/home/%u/.local/share/mirror-os/.init-complete
 
 [Service]
-Type=simple
+Type=oneshot
 ExecStart=/usr/libexec/mirror-os/mirror-init
 StandardOutput=journal
 StandardError=journal
