@@ -10,7 +10,7 @@ usage() {
     echo "Usage: mirror-dev-reset [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --nix       Wipe Nix user profile and garbage-collect the store"
+    echo "  --nix       Wipe Nix user profile, GC the store, and re-scaffold HM config from templates"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
     echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-os-flatpak-init.service"
     echo "  --cosmic    Reset COSMIC desktop settings"
@@ -55,7 +55,7 @@ echo "WARNING: Mirror OS Development Reset"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "The following will be reset:"
-if $DO_NIX;      then echo "  - Nix user profile and store (garbage-collect all old packages)"; fi
+if $DO_NIX;      then echo "  - Nix user profile and store (garbage-collect all old packages) + HM config re-scaffolded from templates"; fi
 if $DO_HM;       then echo "  - Home Manager config and generations"; fi
 if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-os-flatpak-init.service)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
@@ -98,6 +98,26 @@ if $DO_NIX; then
     rm -f "$REAL_HOME/.nix-profile"
 
     echo "  → Nix user profile wiped."
+
+    # Re-scaffold home-manager config from the current image templates so the
+    # next switch picks up any template changes made during development.
+    echo "  → Re-scaffolding home-manager config from templates..."
+    rm -rf "$HM_DEST"
+    mkdir -p "$HM_DEST"
+
+    for template in flake.nix home.nix home-mirror-cosmic.nix home-user.nix; do
+        sed "s/__USERNAME__/$REAL_USER/g" \
+            "$TEMPLATES_DIR/${template}.template" \
+            > "$HM_DEST/$template"
+    done
+
+    git -C "$HM_DEST" init -b main -q
+    git -C "$HM_DEST" config user.email "$REAL_USER@mirror-os.local"
+    git -C "$HM_DEST" config user.name "$REAL_USER"
+    git -C "$HM_DEST" add .
+    git -C "$HM_DEST" commit -m "initial" -q
+
+    echo "  → Home Manager config re-scaffolded. Run --hm or 'home-manager switch' to apply."
 fi
 
 # ── Home Manager reset ────────────────────────────────────────────────────────
