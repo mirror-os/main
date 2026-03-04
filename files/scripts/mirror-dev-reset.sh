@@ -105,7 +105,7 @@ if $DO_NIX; then
     rm -rf "$HM_DEST"
     mkdir -p "$HM_DEST"
 
-    for template in flake.nix home.nix home-mirror-cosmic.nix home-user.nix; do
+    for template in flake.nix home.nix home-user.nix; do
         sed "s/__USERNAME__/$REAL_USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_DEST/$template"
@@ -126,7 +126,7 @@ if $DO_HM; then
     rm -rf "$HM_DEST"
     mkdir -p "$HM_DEST"
 
-    for template in flake.nix home.nix home-mirror-cosmic.nix home-user.nix; do
+    for template in flake.nix home.nix home-user.nix; do
         sed "s/__USERNAME__/$REAL_USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_DEST/$template"
