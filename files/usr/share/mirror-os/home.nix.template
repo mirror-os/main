@@ -68,10 +68,9 @@
   # which sends noisy "Installing 0 Flatpaks" notifications on every activation.
   # GTK_THEME is intentionally omitted: GTK4/libadwaita Flatpak apps follow the
   # color-scheme portal automatically, adapting to COSMIC's dark/light setting.
-  # Papirus (without a -Dark/-Light suffix) works in both modes.
   # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix.
   home.file.".local/share/flatpak/overrides/global".text = ''
     [Environment]
-    ICON_THEME=Papirus
+    ICON_THEME=Breeze
   '';
 }
