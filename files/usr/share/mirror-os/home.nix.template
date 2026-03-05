@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   imports = [
@@ -100,4 +100,23 @@
     GTK_CSD=0
     ICON_THEME=Breeze
   '';
+
+  # Workaround: prevent duplicate Flatpak entries in COSMIC launcher.
+  # COSMIC scans both ~/.local/share/applications/ (XDG_DATA_HOME) and
+  # ~/.local/share/flatpak/exports/share/applications/ (appended to
+  # XDG_DATA_DIRS by /etc/profile.d/flatpak.sh) and does not de-duplicate
+  # by app ID — causing user-scope Flatpaks to appear twice.
+  # We set XDG_DATA_DIRS explicitly without the user exports path; Flatpak's
+  # own symlinks in ~/.local/share/ remain visible so apps still appear once.
+  # Icons are unaffected: Flatpak also symlinks icons into ~/.local/share/icons/.
+  # Remove this override once pop-os/cosmic-epoch fixes the de-duplication bug.
+  home.sessionVariables = {
+    XDG_DATA_DIRS = lib.concatStringsSep ":" [
+      "${config.home.homeDirectory}/.nix-profile/share"
+      "${config.home.homeDirectory}/.local/share"
+      "/usr/local/share"
+      "/usr/share"
+      "/var/lib/flatpak/exports/share"
+    ];
+  };
 }

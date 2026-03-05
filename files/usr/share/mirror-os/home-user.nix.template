@@ -4,6 +4,16 @@
 { pkgs, ... }:
 
 {
+  # Apps installed via Mirror OS Software Center are tracked as individual
+  # .nix modules in the apps/ folder next to this file and auto-imported below.
+  imports =
+    let appsDir = ./apps;
+    in if builtins.pathExists appsDir
+       then map (f: appsDir + "/${f}")
+         (builtins.filter (f: builtins.match ".*\\.nix" f != null)
+           (builtins.attrNames (builtins.readDir appsDir)))
+       else [];
+
   # Example: add your own packages
   # home.packages = with pkgs; [
   #   htop
