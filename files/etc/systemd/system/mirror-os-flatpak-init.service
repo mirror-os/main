@@ -1,8 +1,7 @@
 [Unit]
-Description=Mirror OS Default Flatpak App Installation
+Description=Mirror OS Flatpak Reconciler
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=!/var/lib/mirror-os/.flatpaks-installed
 
 [Service]
 Type=oneshot

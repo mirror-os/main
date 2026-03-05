@@ -1,28 +1,64 @@
 #!/usr/bin/env bash
-# Mirror OS Default Flatpak Installer
-# Installs default apps at system scope from the Flathub remote.
-# Called by mirror-os-flatpak-init.service as root on first boot, before the
-# display manager starts.  Runs only once — writes a stamp on completion so
-# the service is skipped on every subsequent boot.
-# This script must remain simple and auditable — do not add logic here.
+# Mirror OS Flatpak Reconciler
+# Runs on every boot via mirror-os-flatpak-init.service as root.
+#
+# managed-apps.list  — installed if missing; removed if deleted from the list
+# pinned-apps.list   — installed if missing; never removed by image updates
+#
+# Only system-scope Flatpaks are managed. User-scope installs are untouched.
 
 set -uo pipefail
 
-DEFAULT_APPS_LIST="/usr/share/mirror-os/default-apps.list"
-STAMP="/var/lib/mirror-os/.flatpaks-installed"
+MANAGED_LIST="/usr/share/mirror-os/managed-apps.list"
+PINNED_LIST="/usr/share/mirror-os/pinned-apps.list"
+LOG="/var/log/mirror-os-flatpak.log"
 
-[ -f "$DEFAULT_APPS_LIST" ] || exit 0
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
 mkdir -p /var/lib/mirror-os
 
-while IFS= read -r appid; do
-    [[ -z "$appid" || "$appid" == \#* ]] && continue
-    if flatpak list --system --app --columns=application 2>/dev/null | grep -qx "$appid"; then
-        echo "Already installed (system): $appid"
-        continue
-    fi
-    flatpak install --system --noninteractive flathub "$appid" 2>&1 || \
-        echo "WARNING: Could not install $appid" >&2
-done < "$DEFAULT_APPS_LIST"
+# ── Load lists into associative arrays ──────────────────────────────────────
+declare -A managed=()
+declare -A pinned=()
 
-touch "$STAMP"
+read_list() {
+    local file="$1"
+    local -n ref="$2"
+    [ -f "$file" ] || return
+    while IFS= read -r appid; do
+        [[ -z "$appid" || "$appid" == \#* ]] && continue
+        ref["$appid"]=1
+    done < "$file"
+}
+
+read_list "$MANAGED_LIST" managed
+read_list "$PINNED_LIST" pinned
+
+log "=== Mirror OS Flatpak reconciliation starting ==="
+log "Managed: ${!managed[*]:-none}"
+log "Pinned:  ${!pinned[*]:-none}"
+
+# ── Get current system-scope installs ───────────────────────────────────────
+mapfile -t installed < <(flatpak list --system --app --columns=application 2>/dev/null)
+
+# ── Install missing apps from both lists ────────────────────────────────────
+all_wanted=("${!managed[@]}" "${!pinned[@]}")
+for appid in "${all_wanted[@]}"; do
+    if printf '%s\n' "${installed[@]}" | grep -qx "$appid"; then
+        log "Already installed: $appid"
+    else
+        log "Installing: $appid"
+        flatpak install --system --noninteractive flathub "$appid" 2>&1 | tee -a "$LOG" || \
+            log "WARNING: Could not install $appid"
+    fi
+done
+
+# ── Remove system-scope apps no longer in either list ───────────────────────
+for appid in "${installed[@]}"; do
+    [[ -n "${managed[$appid]+x}" || -n "${pinned[$appid]+x}" ]] && continue
+    log "Removing (no longer managed): $appid"
+    flatpak uninstall --system --noninteractive "$appid" 2>&1 | tee -a "$LOG" || \
+        log "WARNING: Could not remove $appid"
+done
+
+log "=== Mirror OS Flatpak reconciliation complete ==="
