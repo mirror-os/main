@@ -1,0 +1,18 @@
+# Mirror OS managed Flatpak apps
+# Reconciled on every boot by mirror-os-flatpak-init.service:
+#   - Installed if missing
+#   - Removed if this entry is deleted in a future image update
+# One Flatpak application ID per line. Lines starting with # are ignored.
+
+# Utilities
+com.github.tchx84.Flatseal
+org.gnome.Calculator
+it.mijorus.gearlever
+io.github.dvlv.boxbuddyrs
+
+# Media
+org.kde.haruna
+org.gnome.Loupe
+
+# Communication
+org.localsend.localsend_app

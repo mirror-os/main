@@ -1,0 +1,14 @@
+# Mirror OS pinned Flatpak apps
+# Installed once if missing; never removed by image updates.
+# Use this list for apps where the user may have significant data
+# tied to that specific app ID (Wine prefixes, browser profiles, etc.).
+# One Flatpak application ID per line. Lines starting with # are ignored.
+
+# Browser
+app.zen_browser.zen
+
+# Office
+org.onlyoffice.desktopeditors
+
+# Compatibility
+com.usebottles.bottles
