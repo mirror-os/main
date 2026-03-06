@@ -86,10 +86,14 @@ modules:
       - zsh
 
   # Remove Firefox shipped in the base image; it is replaced by a Flatpak.
+  # Remove cosmic-store; it is replaced by the Mirror OS Software Center
+  # (/usr/bin/mirror-software-center), injected into the image by CI from
+  # the private ghcr.io/mirror-os/mirror-software-center package.
   - type: rpm-ostree
     remove:
       - firefox
       - firefox-langpacks
+      - cosmic-store
 
   # Install Waydroid (Android container runtime) from the upstream COPR.
   # Installing via RPM rather than Nix keeps the container service at the

@@ -11,10 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write    # write: push signed Mirror OS image; read: pull mirror-software-center
       id-token: write
 
     steps:
+      - name: Checkout mirror-os
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inject Mirror OS Software Center binary
+        run: |
+          id=$(docker create ghcr.io/mirror-os/mirror-software-center:latest)
+          mkdir -p files/usr/bin files/usr/share/applications files/usr/share/icons
+          docker cp $id:/usr/bin/mirror-software-center files/usr/bin/mirror-software-center
+          docker cp $id:/usr/share/applications/. files/usr/share/applications/
+          docker cp $id:/usr/share/icons/. files/usr/share/icons/
+          docker rm $id
+          chmod +x files/usr/bin/mirror-software-center
+
       # Three attempts with a 60-second cooldown between each.
       # Transient failures (RPM Fusion mirror timeouts, registry blips) are
       # retried automatically.  Genuine build errors fail all three attempts
