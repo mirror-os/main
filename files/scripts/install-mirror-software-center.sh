@@ -9,7 +9,7 @@ echo "=== Installing Mirror OS Software Center ==="
 
 # Pull image into a local OCI directory for extraction
 mkdir -p /tmp/mirror-sc-oci
-skopeo copy "docker://${IMAGE}" "oci:/tmp/mirror-sc-oci"
+skopeo copy --insecure-policy "docker://${IMAGE}" "oci:/tmp/mirror-sc-oci"
 
 # Extract the single layer (scratch image has one layer)
 LAYER=$(ls /tmp/mirror-sc-oci/blobs/sha256/ | grep -v '\.json' | head -1)
