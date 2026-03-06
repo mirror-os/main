@@ -26,16 +26,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Inject Mirror OS Software Center binary
-        run: |
-          id=$(docker create --entrypoint="" ghcr.io/mirror-os/mirror-software-center:latest /)
-          mkdir -p files/usr/bin files/usr/share/applications files/usr/share/icons
-          docker cp $id:/usr/bin/mirror-software-center files/usr/bin/mirror-software-center
-          docker cp $id:/usr/share/applications/. files/usr/share/applications/
-          docker cp $id:/usr/share/icons/. files/usr/share/icons/
-          docker rm $id
-          chmod +x files/usr/bin/mirror-software-center
-
       # Three attempts with a 60-second cooldown between each.
       # Transient failures (RPM Fusion mirror timeouts, registry blips) are
       # retried automatically.  Genuine build errors fail all three attempts
