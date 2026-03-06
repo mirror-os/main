@@ -86,9 +86,7 @@ modules:
       - zsh
 
   # Remove Firefox shipped in the base image; it is replaced by a Flatpak.
-  # Remove cosmic-store; it is replaced by the Mirror OS Software Center
-  # (/usr/bin/mirror-software-center), injected into the image by CI from
-  # the private ghcr.io/mirror-os/mirror-software-center package.
+  # Remove cosmic-store; it is replaced by the Mirror OS Software Center.
   - type: rpm-ostree
     remove:
       - firefox
@@ -139,6 +137,14 @@ modules:
         repo:
           url: https://dl.flathub.org/repo/flathub.flatpakrepo
           name: flathub
+
+  # Install Mirror OS Software Center binary, desktop file, and icons
+  # from the public ghcr.io/mirror-os/mirror-software-center image.
+  # Using a script module (not files/) so skopeo fetches fresh content
+  # at build time, bypassing Docker layer cache.
+  - type: script
+    scripts:
+      - install-mirror-software-center.sh
 
   # Fix file permissions that the files module does not preserve:
   # mirror-dev-reset needs +x; sudoers drop-in needs 0440 (sudo refuses it
