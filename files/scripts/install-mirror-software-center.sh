@@ -7,11 +7,7 @@ IMAGE="ghcr.io/mirror-os/mirror-software-center:latest"
 
 echo "=== Installing Mirror OS Software Center ==="
 
-# Extract binary and assets from the scratch-based GHCR image
-id=$(skopeo copy "docker://${IMAGE}" "oci-archive:/tmp/mirror-sc.oci" 2>&1 && echo ok)
-
-# Use crane or manual OCI extraction to get files out
-# skopeo copy to dir is simpler
+# Pull image into a local OCI directory for extraction
 mkdir -p /tmp/mirror-sc-oci
 skopeo copy "docker://${IMAGE}" "oci:/tmp/mirror-sc-oci"
 
