@@ -27,7 +27,7 @@ jobs:
 
       - name: Inject Mirror OS Software Center binary
         run: |
-          id=$(docker create ghcr.io/mirror-os/mirror-software-center:latest)
+          id=$(docker create --entrypoint="" ghcr.io/mirror-os/mirror-software-center:latest /)
           mkdir -p files/usr/bin files/usr/share/applications files/usr/share/icons
           docker cp $id:/usr/bin/mirror-software-center files/usr/bin/mirror-software-center
           docker cp $id:/usr/share/applications/. files/usr/share/applications/
