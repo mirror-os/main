@@ -329,10 +329,16 @@ cmd_uninstall() {
 }
 
 cmd_search() {
-    local query="${1:-}"
-    [ -z "$query" ] && die "Usage: mirror-os search <query>"
+    local query="" json=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json=true; shift ;;
+            *)      query="$1"; shift ;;
+        esac
+    done
+    [ -z "$query" ] && die "Usage: mirror-os search <query> [--json]"
 
-    echo "Searching for '$query'..."
+    $json || echo "Searching for '$query'..."
 
     local flat_raw nix_raw
     flat_raw=$(flatpak_search "$query") &
@@ -341,6 +347,25 @@ cmd_search() {
     local nix_pid=$!
     wait $flat_pid || flat_raw=""
     wait $nix_pid  || nix_raw=""
+
+    if $json; then
+        python3 - "$flat_raw" "$nix_raw" << 'PYEOF'
+import json, sys
+flat_lines = sys.argv[1].strip().split('\n') if sys.argv[1].strip() else []
+nix_lines  = sys.argv[2].strip().split('\n') if sys.argv[2].strip() else []
+
+def parse_tsv(lines):
+    result = []
+    for line in lines:
+        parts = line.split('\t')
+        if len(parts) >= 2:
+            result.append({"id": parts[0], "name": parts[1], "description": parts[2] if len(parts) > 2 else ""})
+    return result
+
+print(json.dumps({"flatpak": parse_tsv(flat_lines), "nix": parse_tsv(nix_lines)}, indent=2))
+PYEOF
+        return
+    fi
 
     local found=false
 
@@ -370,6 +395,42 @@ cmd_search() {
 cmd_list() {
     need_init
     mkdir -p "$APPS_DIR"
+    local json=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json=true; shift ;;
+            *) die "Usage: mirror-os list [--json]" ;;
+        esac
+    done
+
+    if $json; then
+        python3 - "$APPS_DIR" << 'PYEOF'
+import json, sys, os
+apps_dir = sys.argv[1]
+result = []
+if os.path.isdir(apps_dir):
+    for fname in sorted(os.listdir(apps_dir)):
+        if not fname.endswith('.nix'):
+            continue
+        path = os.path.join(apps_dir, fname)
+        app_id = fname[:-4]
+        try:
+            content = open(path).read()
+        except Exception:
+            content = ""
+        source = "unknown"
+        if "services.flatpak.packages" in content:
+            source = "flatpak"
+        elif "home.packages" in content:
+            source = "nix"
+        elif "homeManagerModules" in content:
+            source = "pro_flake"
+        result.append({"id": app_id, "source": source, "module_path": path})
+print(json.dumps(result, indent=2))
+PYEOF
+        return
+    fi
+
     local files
     files=$(find "$APPS_DIR" -maxdepth 1 -name "*.nix" 2>/dev/null | sort)
 
@@ -391,6 +452,50 @@ cmd_list() {
         grep -q "homeManagerModules" "$f" 2>/dev/null && src="Pro flake"
         printf "  %-45s  %s\n" "$id" "$src"
     done <<< "$files"
+}
+
+cmd_info() {
+    need_init
+    local id="${1:-}"
+    [ -z "$id" ] && die "Usage: mirror-os info <app-id>"
+
+    local out_file
+    out_file=$(module_file "$id")
+
+    if [ ! -f "$out_file" ]; then
+        local matches
+        matches=$(find "$APPS_DIR" -name "*${id}*" -name "*.nix" 2>/dev/null | sort)
+        [ -z "$matches" ] && die "App '${id}' not found. Use 'mirror-os list' to see installed apps."
+        local count; count=$(echo "$matches" | wc -l)
+        if [ "$count" -gt 1 ]; then
+            echo "Multiple matches:"; echo "$matches" | while read -r f; do echo "  $(basename "$f" .nix)"; done
+            die "Please specify the exact app ID."
+        fi
+        out_file="$matches"
+        id=$(basename "$out_file" .nix)
+    fi
+
+    local src="unknown"
+    grep -q "services.flatpak.packages" "$out_file" 2>/dev/null && src="Flatpak"
+    grep -q "home.packages" "$out_file" 2>/dev/null && src="Nix"
+    grep -q "homeManagerModules" "$out_file" 2>/dev/null && src="Pro flake"
+
+    echo "App:     $id"
+    echo "Source:  $src"
+    echo "Module:  $out_file"
+    echo ""
+    echo "--- Module ---"
+    cat "$out_file"
+
+    if [ "$src" = "Flatpak" ]; then
+        echo ""
+        echo "--- Flatpak info ---"
+        flatpak info --user "$id" 2>/dev/null || flatpak info "$id" 2>/dev/null || \
+            echo "(not yet installed — pending next sync)"
+        echo ""
+        echo "--- User overrides ---"
+        flatpak override --user --show "$id" 2>/dev/null || echo "(none)"
+    fi
 }
 
 cmd_update() {
@@ -431,11 +536,12 @@ resolve_snapshot_sha() {
 
 cmd_snapshots() {
     need_init
-    local type="cosmic"
+    local type="cosmic" json=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="$2"; shift 2 ;;
-            *) die "Usage: mirror-os snapshots [--type cosmic|apps|all]" ;;
+            --json) json=true; shift ;;
+            *) die "Usage: mirror-os snapshots [--type cosmic|apps|all] [--json]" ;;
         esac
     done
 
@@ -449,23 +555,44 @@ cmd_snapshots() {
         *)      die "Unknown type '$type'. Use: cosmic, apps, all" ;;
     esac
 
+    # Collect all snapshot entries first (needed for both JSON and human output)
     local index=0
-    local found=false
+    local entries=""
     while IFS='|' read -r date sha msg; do
         (( index++ ))
-        found=true
         local changed=""
         if [ "$type" = "cosmic" ] || [ "$type" = "all" ]; then
             changed=$(git -C "$STATE_DIR" show "${sha}:cosmic-changes.log" 2>/dev/null \
-                | tr '\n' ' ' | cut -c1-80 || true)
+                | tr '\n' ' ' || true)
         fi
-        printf "[%2d]  %s  %s  %s\n" \
-            "$index" "${date:0:19}" "${sha:0:7}" "$msg"
-        [ -n "$changed" ] && printf "       Changed: %s\n" "$changed"
-        echo ""
+        entries="${entries}${index}|${date:0:19}|${sha}|${msg}|${changed}\n"
     done < <(git -C "$STATE_DIR" log --format="%ai|%H|%s" -- $path_filter 2>/dev/null)
 
-    $found || echo "No snapshots found for type: $type"
+    [ -z "$entries" ] && { $json && echo "[]" || echo "No snapshots found for type: $type"; return; }
+
+    if $json; then
+        printf "%b" "$entries" | python3 << 'PYEOF'
+import json, sys
+result = []
+for line in sys.stdin:
+    parts = line.rstrip('\n').split('|', 4)
+    if len(parts) < 4:
+        continue
+    idx, date, sha, msg = parts[0], parts[1], parts[2], parts[3]
+    changed_raw = parts[4] if len(parts) > 4 else ""
+    changed = [c for c in changed_raw.strip().split() if c]
+    result.append({"index": int(idx), "sha": sha, "short_sha": sha[:7],
+                   "date": date, "message": msg, "changed": changed})
+print(json.dumps(result, indent=2))
+PYEOF
+        return
+    fi
+
+    printf "%b" "$entries" | while IFS='|' read -r idx date sha msg changed; do
+        printf "[%2s]  %s  %s  %s\n" "$idx" "$date" "${sha:0:7}" "$msg"
+        [ -n "$changed" ] && printf "       Changed: %.80s\n" "$changed"
+        echo ""
+    done
 }
 
 cmd_rollback() {
@@ -530,6 +657,25 @@ cmd_add_option() {
     trigger_switch
 }
 
+cmd_remove_option() {
+    need_init
+    local app_id="${1:-}" key="${2:-}"
+    [ -z "$app_id" ] || [ -z "$key" ] && \
+        die "Usage: mirror-os --app <id> --remove-option <key>"
+
+    local out_file
+    out_file=$(module_file "$app_id")
+    [ -f "$out_file" ] || die "App '${app_id}' not found. Use 'mirror-os list' to see installed apps."
+
+    if ! grep -qF "  ${key} = " "$out_file"; then
+        die "Option '${key}' not found in ${app_id}'s module."
+    fi
+
+    sed -i "/^  ${key} = /d" "$out_file"
+    echo "Removed option '${key}' from ${app_id}."
+    trigger_switch
+}
+
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 
 usage() {
@@ -537,25 +683,36 @@ usage() {
 mirror-os — Mirror OS declarative app manager
 
 Usage:
-  mirror-os install <query>              Search Flatpak + Nix, pick and install
-  mirror-os install <query> --flatpak   Force Flatpak install
-  mirror-os install <query> --nix       Force Nix package install
-  mirror-os install --flake <url> <name>  Install a pro flake app config
-  mirror-os uninstall <id>              Remove an installed app
-  mirror-os search <query>              Search without installing
-  mirror-os list                        List mirror-os managed apps
-  mirror-os update                      Update flake.lock and switch
-  mirror-os --app <id> --add-option <key> <value>  Add an option to an app
-  mirror-os snapshots [--type cosmic|apps|all]   List state snapshots
-  mirror-os rollback cosmic <sha|index>  Restore COSMIC config from snapshot
+  mirror-os install <query>                        Search Flatpak + Nix, pick and install
+  mirror-os install <query> --flatpak              Force Flatpak install
+  mirror-os install <query> --nix                  Force Nix package install
+  mirror-os install --flake <url> <name>           Install a pro flake app config
+  mirror-os uninstall <id>                         Remove an installed app
+  mirror-os search <query> [--json]                Search without installing
+  mirror-os list [--json]                          List mirror-os managed apps
+  mirror-os info <id>                              Show app details and module
+  mirror-os update                                 Update flake.lock and switch
+  mirror-os snapshots [--type cosmic|apps|all] [--json]  List state snapshots
+  mirror-os rollback cosmic <sha|index>            Restore COSMIC config from snapshot
+
+  mirror-os --app <id> --add-option <key> <value>  Add a Nix option to an app
+  mirror-os --app <id> --remove-option <key>        Remove a Nix option from an app
+  mirror-os --app <id> --show-config               Print the app's .nix module
+  mirror-os --app <id> --edit                      Open the app's .nix in $EDITOR
 
 Examples:
   mirror-os install spotify
   mirror-os install ripgrep --nix
   mirror-os install --flake github:mirror-os/apps#devtools devtools
   mirror-os uninstall com.spotify.Client
+  mirror-os info com.spotify.Client
+  mirror-os list --json
+  mirror-os search vscode --json
   mirror-os --app com.spotify.Client --add-option "environment.PULSE_LATENCY_MSEC" "60"
+  mirror-os --app com.spotify.Client --remove-option "environment.PULSE_LATENCY_MSEC"
+  mirror-os --app com.spotify.Client --edit
   mirror-os snapshots --type cosmic
+  mirror-os snapshots --json
   mirror-os rollback cosmic 2
 EOF
 }
@@ -564,7 +721,8 @@ case "${1:-}" in
     install)   shift; cmd_install "$@" ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     search)    shift; cmd_search "$@" ;;
-    list)      cmd_list ;;
+    list)      shift; cmd_list "$@" ;;
+    info)      shift; cmd_info "$@" ;;
     update)    cmd_update ;;
     snapshots) shift; cmd_snapshots "$@" ;;
     rollback)  shift; cmd_rollback "$@" ;;
@@ -572,8 +730,22 @@ case "${1:-}" in
         shift
         app_id="${1:-}"; shift
         case "${1:-}" in
-            --add-option) shift; cmd_add_option "$app_id" "$@" ;;
-            *) die "Unknown option for --app: ${1:-}. Try --add-option." ;;
+            --add-option)
+                shift; cmd_add_option "$app_id" "$@" ;;
+            --remove-option)
+                shift; cmd_remove_option "$app_id" "$@" ;;
+            --show-config)
+                need_init
+                f=$(module_file "$app_id")
+                [ -f "$f" ] || die "App '${app_id}' not found. Use 'mirror-os list'."
+                cat "$f" ;;
+            --edit)
+                need_init
+                f=$(module_file "$app_id")
+                [ -f "$f" ] || die "App '${app_id}' not found. Use 'mirror-os list'."
+                ${EDITOR:-nano} "$f"
+                trigger_switch ;;
+            *) die "Unknown option for --app: ${1:-}. Options: --add-option, --remove-option, --show-config, --edit" ;;
         esac
         ;;
     help|--help|-h) usage ;;
