@@ -1,27 +1,35 @@
 # YOUR personal Mirror OS configuration
-# This file is YOURS — Mirror OS will never touch it.
+# This file is YOURS — Mirror OS will never touch it after the first login.
 # Add your own packages, settings, and overrides here.
-{ pkgs, ... }:
+# Apps installed via the Software Center or mirror-os CLI appear as individual
+# .nix files in the apps/ folder next to this file.
+{ pkgs, lib, inputs, username, ... }:
 
 {
-  # Apps installed via Mirror OS Software Center are tracked as individual
-  # .nix modules in the apps/ folder next to this file and auto-imported below.
+  # Apps installed via Mirror OS Software Center or mirror-os CLI are tracked
+  # as individual .nix modules in apps/ and auto-imported here.
   imports =
     let appsDir = ./apps;
     in if builtins.pathExists appsDir
        then map (f: appsDir + "/${f}")
-         (builtins.filter (f: builtins.match ".*\\.nix" f != null)
+         (builtins.filter (f: lib.hasSuffix ".nix" f)
            (builtins.attrNames (builtins.readDir appsDir)))
        else [];
 
-  # Example: add your own packages
+  # Example: add your own packages from nixpkgs
   # home.packages = with pkgs; [
-  #   htop
   #   ripgrep
+  #   bat
   # ];
 
-  # Example: override a setting from home.nix
+  # Example: override a setting from the system home.nix
   # programs.zsh.oh-my-zsh.theme = "agnoster";
 
+  # Example: install a Flatpak declaratively (via nix-flatpak)
+  # services.flatpak.packages = [
+  #   { appId = "com.example.App"; origin = "flathub"; }
+  # ];
 
+  # Example: use a pro flake input added by mirror-os
+  # imports = [ inputs.my-app-config.homeManagerModules.default ];
 }

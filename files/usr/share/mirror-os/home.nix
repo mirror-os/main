@@ -1,12 +1,13 @@
-{ config, pkgs, lib, ... }:
+# Mirror OS system-managed Home Manager configuration.
+# This file lives in the read-only OS image (/usr/share/mirror-os/home.nix)
+# and is imported directly by every user's flake.nix.
+# It is updated with each image release — do not copy it into your home.
+# Your personal customisations belong in ~/.config/home-manager/home-user.nix.
+{ config, pkgs, lib, username, ... }:
 
 {
-  imports = [
-    ./home-user.nix
-  ];
-
-  home.username = "__USERNAME__";
-  home.homeDirectory = "/var/home/__USERNAME__";
+  home.username = username;
+  home.homeDirectory = "/var/home/${username}";
   home.stateVersion = "24.11";
 
   programs.home-manager.enable = true;
@@ -16,8 +17,8 @@
   programs.git = {
     enable = true;
     settings.user = {
-      name = "__USERNAME__";
-      email = "__USERNAME__@mirror-os.local";
+      name = username;
+      email = "${username}@mirror-os.local";
     };
   };
 
@@ -88,7 +89,8 @@
   # Flatpak — global overrides for theming and window decorations.
   # Written declaratively as a file to avoid nix-flatpak's managed-install service,
   # which sends noisy "Installing 0 Flatpaks" notifications on every activation.
-  # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix.
+  # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix
+  # or install apps via mirror-os install / the Software Center.
   #
   # GTK_THEME=adw-gtk3-dark  — forces dark mode for GTK3 Flatpak apps (GTK4/
   #   Libadwaita apps use the color-scheme portal instead and ignore this).

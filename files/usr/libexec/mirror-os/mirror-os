@@ -1,0 +1,582 @@
+#!/usr/bin/env bash
+# mirror-os — Mirror OS declarative app manager
+# Manages apps by creating/removing .nix modules in ~/.config/home-manager/apps/.
+# Supports Flatpak (preferred) and Nix packages; pro flakes via --flake.
+#
+# Usage:
+#   mirror-os install <query> [--flatpak | --nix]
+#   mirror-os install --flake <url> <name>
+#   mirror-os uninstall <id>
+#   mirror-os search <query>
+#   mirror-os list
+#   mirror-os update
+#   mirror-os --app <id> --add-option <key> <value>
+
+set -uo pipefail
+
+export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
+
+APPS_DIR="$HOME/.config/home-manager/apps"
+HM_CONFIG_DIR="$HOME/.config/home-manager"
+FLAKE_NIX="$HM_CONFIG_DIR/flake.nix"
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+die() { echo "mirror-os: error: $*" >&2; exit 1; }
+
+need_init() {
+    [ -f "$HOME/.local/share/mirror-os/.init-complete" ] || \
+        die "Mirror OS first-time setup has not completed yet. Please wait for it to finish."
+    command -v nix &>/dev/null || \
+        die "Nix is not available. Please wait for first-time setup to finish."
+    [ -d "$HM_CONFIG_DIR" ] || \
+        die "Home Manager config not found at $HM_CONFIG_DIR."
+}
+
+trigger_switch() {
+    echo "Applying changes..."
+    git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
+    systemctl --user start mirror-os-sync.service 2>/dev/null || \
+        (cd "$HM_CONFIG_DIR" && home-manager switch --flake ".#$USER")
+}
+
+# ── Flatpak search ───────────────────────────────────────────────────────────
+# Returns lines of "AppID\tName\tDescription"
+flatpak_search() {
+    local query="$1"
+    flatpak search --columns=application,name,description "$query" 2>/dev/null \
+        | grep -v '^Application' \
+        | head -20
+}
+
+# ── Nix search ───────────────────────────────────────────────────────────────
+# Returns lines of "nixpkgs.attr\tname\tdescription"
+nix_search() {
+    local query="$1"
+    nix search nixpkgs "$query" --json 2>/dev/null \
+        | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for key, val in list(data.items())[:20]:
+    attr = key.split('.')[-1] if '.' in key else key
+    name = val.get('pname', attr)
+    desc = val.get('description', '').replace('\n', ' ')[:80]
+    print(f'{attr}\t{name}\t{desc}')
+" 2>/dev/null || true
+}
+
+# ── Interactive picker ───────────────────────────────────────────────────────
+# Given results lines, let user pick one. Returns "source:id:name" or empty.
+pick_result() {
+    local -a flat_ids flat_names flat_descs
+    local -a nix_ids nix_names nix_descs
+    local flatpak_raw="$1"
+    local nix_raw="$2"
+
+    while IFS=$'\t' read -r id name desc; do
+        [ -z "$id" ] && continue
+        flat_ids+=("$id"); flat_names+=("$name"); flat_descs+=("$desc")
+    done <<< "$flatpak_raw"
+
+    while IFS=$'\t' read -r id name desc; do
+        [ -z "$id" ] && continue
+        nix_ids+=("$id"); nix_names+=("$name"); nix_descs+=("$desc")
+    done <<< "$nix_raw"
+
+    local total=$(( ${#flat_ids[@]} + ${#nix_ids[@]} ))
+    [ "$total" -eq 0 ] && return 1
+
+    local i=1
+    if [ ${#flat_ids[@]} -gt 0 ]; then
+        echo ""
+        echo "  Flatpak:"
+        for j in "${!flat_ids[@]}"; do
+            printf "  [%2d] %-40s  %s\n" "$i" "${flat_names[$j]} (${flat_ids[$j]})" "${flat_descs[$j]:0:50}"
+            (( i++ ))
+        done
+    fi
+    if [ ${#nix_ids[@]} -gt 0 ]; then
+        echo ""
+        echo "  Nix packages:"
+        for j in "${!nix_ids[@]}"; do
+            printf "  [%2d] %-40s  %s\n" "$i" "${nix_names[$j]} (nixpkgs.${nix_ids[$j]})" "${nix_descs[$j]:0:50}"
+            (( i++ ))
+        done
+    fi
+
+    echo ""
+    printf "Select number (1-%d) or q to quit: " "$total"
+    read -r choice
+    [[ "$choice" == "q" || -z "$choice" ]] && return 1
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$total" ]; then
+        echo "Invalid selection." >&2; return 1
+    fi
+
+    local idx=$(( choice - 1 ))
+    if [ "$idx" -lt "${#flat_ids[@]}" ]; then
+        echo "flatpak:${flat_ids[$idx]}:${flat_names[$idx]}"
+    else
+        local nix_idx=$(( idx - ${#flat_ids[@]} ))
+        echo "nix:${nix_ids[$nix_idx]}:${nix_names[$nix_idx]}"
+    fi
+}
+
+# ── Generate app module ──────────────────────────────────────────────────────
+write_flatpak_module() {
+    local app_id="$1" app_name="$2" out_file="$3"
+    cat > "$out_file" << EOF
+# ${app_name} — installed via mirror-os
+# To remove: mirror-os uninstall ${app_id}
+{ ... }: {
+  services.flatpak.packages = [
+    { appId = "${app_id}"; origin = "flathub"; }
+  ];
+}
+EOF
+}
+
+write_nix_module() {
+    local attr="$1" pkg_name="$2" out_file="$3"
+    cat > "$out_file" << EOF
+# ${pkg_name} — installed via mirror-os
+# To remove: mirror-os uninstall ${attr}
+{ pkgs, ... }: {
+  home.packages = [ pkgs.${attr} ];
+}
+EOF
+}
+
+write_pro_flake_module() {
+    local input_name="$1" module_name="$2" out_file="$3"
+    cat > "$out_file" << EOF
+# ${module_name} — pro flake installed via mirror-os
+# To remove: mirror-os uninstall ${module_name}
+{ inputs, ... }: {
+  imports = [ inputs.${input_name}.homeManagerModules.default ];
+}
+EOF
+}
+
+# ── Inject pro flake input into flake.nix ───────────────────────────────────
+inject_flake_input() {
+    local input_name="$1" flake_url="$2"
+    local marker="# Pro flake inputs are added here by mirror-os tool"
+    if ! grep -q "$marker" "$FLAKE_NIX"; then
+        die "Could not find pro flake marker in $FLAKE_NIX. Is it from the current image template?"
+    fi
+    # Insert the new input line after the marker
+    sed -i "s|${marker}|${marker}\n    ${input_name}.url = \"${flake_url}\";|" "$FLAKE_NIX"
+    echo "Added flake input: ${input_name} = ${flake_url}"
+}
+
+# ── Module file name for a given ID ─────────────────────────────────────────
+# Converts app IDs like "com.spotify.Client" → "com.spotify.Client.nix"
+# Nix attrs like "ripgrep" → "ripgrep.nix"
+module_file() {
+    echo "$APPS_DIR/${1}.nix"
+}
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+cmd_install() {
+    need_init
+    mkdir -p "$APPS_DIR"
+
+    local force_flatpak=false force_nix=false use_flake=false
+    local query="" flake_url="" flake_name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --flatpak) force_flatpak=true; shift ;;
+            --nix)     force_nix=true; shift ;;
+            --flake)   use_flake=true; flake_url="$2"; flake_name="$3"; shift 3 ;;
+            *)         query="$1"; shift ;;
+        esac
+    done
+
+    # Pro flake install
+    if $use_flake; then
+        [ -z "$flake_url" ] || [ -z "$flake_name" ] && \
+            die "Usage: mirror-os install --flake <url> <name>"
+        local safe_name="${flake_name//[^a-zA-Z0-9_-]/-}"
+        local input_name="mirror-${safe_name}"
+        local out_file
+        out_file=$(module_file "$safe_name")
+        [ -f "$out_file" ] && die "App '${safe_name}' is already installed (${out_file})."
+
+        inject_flake_input "$input_name" "$flake_url"
+        echo "Locking flake inputs..."
+        (cd "$HM_CONFIG_DIR" && nix flake lock) || die "nix flake lock failed"
+        write_pro_flake_module "$input_name" "$safe_name" "$out_file"
+        echo "Installed pro flake: ${safe_name}"
+        trigger_switch
+        return
+    fi
+
+    [ -z "$query" ] && die "Usage: mirror-os install <app name or ID> [--flatpak | --nix]"
+
+    # Force-flatpak: skip nix search
+    if $force_flatpak; then
+        local flat_raw
+        flat_raw=$(flatpak_search "$query")
+        [ -z "$flat_raw" ] && die "No Flatpak found for: $query"
+        local selection
+        echo "Flatpak results for '$query':"
+        selection=$(pick_result "$flat_raw" "") || { echo "Cancelled."; exit 0; }
+        local src id name
+        IFS=: read -r src id name <<< "$selection"
+        local out_file
+        out_file=$(module_file "$id")
+        [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
+        write_flatpak_module "$id" "$name" "$out_file"
+        echo "Installed Flatpak: ${name} (${id})"
+        trigger_switch
+        return
+    fi
+
+    # Force-nix: skip flatpak search
+    if $force_nix; then
+        local nix_raw
+        nix_raw=$(nix_search "$query")
+        [ -z "$nix_raw" ] && die "No Nix package found for: $query"
+        local selection
+        echo "Nix results for '$query':"
+        selection=$(pick_result "" "$nix_raw") || { echo "Cancelled."; exit 0; }
+        local src id name
+        IFS=: read -r src id name <<< "$selection"
+        local out_file
+        out_file=$(module_file "$id")
+        [ -f "$out_file" ] && die "Package '${id}' is already installed (${out_file})."
+        write_nix_module "$id" "$name" "$out_file"
+        echo "Installed Nix package: ${name} (${id})"
+        trigger_switch
+        return
+    fi
+
+    # Smart detection: run Flatpak and Nix searches in parallel
+    echo "Searching for '$query'..."
+    local flat_raw nix_raw
+    flat_raw=$(flatpak_search "$query") &
+    local flat_pid=$!
+    nix_raw=$(nix_search "$query") &
+    local nix_pid=$!
+    wait $flat_pid || flat_raw=""
+    wait $nix_pid  || nix_raw=""
+
+    [ -z "$flat_raw" ] && [ -z "$nix_raw" ] && die "No results found for: $query"
+
+    echo "Results for '$query':"
+    local selection
+    selection=$(pick_result "$flat_raw" "$nix_raw") || { echo "Cancelled."; exit 0; }
+
+    local src id name
+    IFS=: read -r src id name <<< "$selection"
+    local out_file
+    out_file=$(module_file "$id")
+    [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
+
+    if [ "$src" = "flatpak" ]; then
+        write_flatpak_module "$id" "$name" "$out_file"
+        echo "Installed Flatpak: ${name} (${id})"
+    else
+        write_nix_module "$id" "$name" "$out_file"
+        echo "Installed Nix package: ${name} (${id})"
+    fi
+    trigger_switch
+}
+
+cmd_uninstall() {
+    need_init
+    local id="${1:-}"
+    [ -z "$id" ] && die "Usage: mirror-os uninstall <app-id>"
+
+    local out_file
+    out_file=$(module_file "$id")
+
+    if [ ! -f "$out_file" ]; then
+        # Try to find by partial name
+        local matches
+        matches=$(find "$APPS_DIR" -name "*${id}*" -name "*.nix" 2>/dev/null)
+        if [ -z "$matches" ]; then
+            die "App '${id}' not found in $APPS_DIR. Use 'mirror-os list' to see installed apps."
+        fi
+        local count
+        count=$(echo "$matches" | wc -l)
+        if [ "$count" -gt 1 ]; then
+            echo "Multiple matches found:"
+            echo "$matches" | while read -r f; do echo "  $(basename "$f" .nix)"; done
+            die "Please specify the exact app ID."
+        fi
+        out_file="$matches"
+        id=$(basename "$out_file" .nix)
+    fi
+
+    printf "Remove '%s'? [y/N] " "$id"
+    read -r confirm
+    [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+
+    # Also remove pro flake input from flake.nix if present
+    local input_name="mirror-${id}"
+    if grep -q "${input_name}.url" "$FLAKE_NIX" 2>/dev/null; then
+        sed -i "/${input_name}.url/d" "$FLAKE_NIX"
+        echo "Removed flake input: ${input_name}"
+    fi
+
+    rm "$out_file"
+    echo "Uninstalled: ${id}"
+    trigger_switch
+}
+
+cmd_search() {
+    local query="${1:-}"
+    [ -z "$query" ] && die "Usage: mirror-os search <query>"
+
+    echo "Searching for '$query'..."
+
+    local flat_raw nix_raw
+    flat_raw=$(flatpak_search "$query") &
+    local flat_pid=$!
+    nix_raw=$(nix_search "$query") &
+    local nix_pid=$!
+    wait $flat_pid || flat_raw=""
+    wait $nix_pid  || nix_raw=""
+
+    local found=false
+
+    if [ -n "$flat_raw" ]; then
+        echo ""
+        echo "  Flatpak (flathub):"
+        while IFS=$'\t' read -r id name desc; do
+            [ -z "$id" ] && continue
+            printf "    %-40s  %s\n" "${name} (${id})" "${desc:0:55}"
+        done <<< "$flat_raw"
+        found=true
+    fi
+
+    if [ -n "$nix_raw" ]; then
+        echo ""
+        echo "  Nix packages (nixpkgs):"
+        while IFS=$'\t' read -r id name desc; do
+            [ -z "$id" ] && continue
+            printf "    %-40s  %s\n" "${name} (nixpkgs.${id})" "${desc:0:55}"
+        done <<< "$nix_raw"
+        found=true
+    fi
+
+    $found || echo "No results found for: $query"
+}
+
+cmd_list() {
+    need_init
+    mkdir -p "$APPS_DIR"
+    local files
+    files=$(find "$APPS_DIR" -maxdepth 1 -name "*.nix" 2>/dev/null | sort)
+
+    if [ -z "$files" ]; then
+        echo "No apps installed via mirror-os."
+        echo "Use 'mirror-os install <app>' to install apps."
+        return
+    fi
+
+    echo "Apps managed by mirror-os:"
+    echo ""
+    while IFS= read -r f; do
+        local id
+        id=$(basename "$f" .nix)
+        # Detect source type from file content
+        local src="unknown"
+        grep -q "services.flatpak.packages" "$f" 2>/dev/null && src="Flatpak"
+        grep -q "home.packages" "$f" 2>/dev/null && src="Nix"
+        grep -q "homeManagerModules" "$f" 2>/dev/null && src="Pro flake"
+        printf "  %-45s  %s\n" "$id" "$src"
+    done <<< "$files"
+}
+
+cmd_update() {
+    need_init
+    echo "Updating flake inputs..."
+    (cd "$HM_CONFIG_DIR" && nix flake update) || die "nix flake update failed"
+    trigger_switch
+}
+
+STATE_DIR="$HOME/.local/share/mirror-os/state"
+
+# ── Resolve a snapshot reference to a full git SHA ──────────────────────────
+# Accepts: 7+ char SHA, or a 1-based integer index into `git log -- cosmic-config/`
+resolve_snapshot_sha() {
+    local ref="$1" type="${2:-cosmic}"
+    local path_filter
+    case "$type" in
+        cosmic) path_filter="cosmic-config/" ;;
+        apps)   path_filter="home-manager/apps/" ;;
+        *)      path_filter="" ;;
+    esac
+
+    if [[ "$ref" =~ ^[0-9]+$ ]]; then
+        # Numeric index
+        local sha
+        sha=$(git -C "$STATE_DIR" log --format="%H" -- $path_filter \
+            | sed -n "${ref}p")
+        [ -z "$sha" ] && die "Snapshot index $ref not found."
+        echo "$sha"
+    else
+        # Treat as partial/full SHA
+        local sha
+        sha=$(git -C "$STATE_DIR" rev-parse --verify "${ref}^{commit}" 2>/dev/null) || \
+            die "Snapshot '${ref}' not found in state history."
+        echo "$sha"
+    fi
+}
+
+cmd_snapshots() {
+    need_init
+    local type="cosmic"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type) type="$2"; shift 2 ;;
+            *) die "Usage: mirror-os snapshots [--type cosmic|apps|all]" ;;
+        esac
+    done
+
+    [ -d "$STATE_DIR/.git" ] || die "State git repo not found at $STATE_DIR."
+
+    local path_filter
+    case "$type" in
+        cosmic) path_filter="cosmic-config/" ;;
+        apps)   path_filter="home-manager/apps/" ;;
+        all)    path_filter="" ;;
+        *)      die "Unknown type '$type'. Use: cosmic, apps, all" ;;
+    esac
+
+    local index=0
+    local found=false
+    while IFS='|' read -r date sha msg; do
+        (( index++ ))
+        found=true
+        local changed=""
+        if [ "$type" = "cosmic" ] || [ "$type" = "all" ]; then
+            changed=$(git -C "$STATE_DIR" show "${sha}:cosmic-changes.log" 2>/dev/null \
+                | tr '\n' ' ' | cut -c1-80 || true)
+        fi
+        printf "[%2d]  %s  %s  %s\n" \
+            "$index" "${date:0:19}" "${sha:0:7}" "$msg"
+        [ -n "$changed" ] && printf "       Changed: %s\n" "$changed"
+        echo ""
+    done < <(git -C "$STATE_DIR" log --format="%ai|%H|%s" -- $path_filter 2>/dev/null)
+
+    $found || echo "No snapshots found for type: $type"
+}
+
+cmd_rollback() {
+    need_init
+    local type="${1:-}" ref="${2:-}"
+    [ -z "$type" ] || [ -z "$ref" ] && \
+        die "Usage: mirror-os rollback cosmic <sha|index>"
+
+    case "$type" in
+        cosmic)
+            local sha
+            sha=$(resolve_snapshot_sha "$ref" "cosmic")
+
+            echo "Rolling back COSMIC config to snapshot ${sha:0:7}..."
+            printf "Changed files in that snapshot:\n"
+            git -C "$STATE_DIR" show "${sha}:cosmic-changes.log" 2>/dev/null \
+                | sed 's/^/  /' || echo "  (no change log available)"
+            echo ""
+            printf "Apply this rollback? [y/N] "
+            read -r confirm
+            [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+
+            local tmpdir
+            tmpdir=$(mktemp -d)
+            # Extract the cosmic-config tree from the chosen commit (safe — no working tree checkout)
+            git -C "$STATE_DIR" archive "$sha" cosmic-config/ | tar -xC "$tmpdir" 2>/dev/null || \
+                die "Failed to extract snapshot $sha from state git."
+
+            rsync -a --delete "$tmpdir/cosmic-config/" "$HOME/.config/cosmic/" || \
+                die "Failed to restore COSMIC config files."
+            rm -rf "$tmpdir"
+
+            echo "COSMIC config restored to snapshot ${sha:0:7}."
+            echo "Reopen COSMIC Settings or log out/in to see all changes."
+            ;;
+        *)
+            die "Unknown rollback type '$type'. Currently supported: cosmic"
+            ;;
+    esac
+}
+
+cmd_add_option() {
+    need_init
+    local app_id="${1:-}" key="${2:-}" value="${3:-}"
+    [ -z "$app_id" ] || [ -z "$key" ] || [ -z "$value" ] && \
+        die "Usage: mirror-os --app <id> --add-option <key> <value>"
+
+    local out_file
+    out_file=$(module_file "$app_id")
+    [ -f "$out_file" ] || die "App '${app_id}' not found. Use 'mirror-os list' to see installed apps."
+
+    # Append option block before closing brace
+    local option_line="  ${key} = ${value};"
+    if grep -qF "$option_line" "$out_file"; then
+        echo "Option '${key}' already set to '${value}' in ${out_file}."
+        return
+    fi
+
+    # Insert before last closing brace
+    sed -i "$(grep -n '^}' "$out_file" | tail -1 | cut -d: -f1)i\\  ${key} = ${value};" "$out_file"
+    echo "Added option '${key} = ${value}' to ${app_id}."
+    trigger_switch
+}
+
+# ── Entrypoint ───────────────────────────────────────────────────────────────
+
+usage() {
+    cat << 'EOF'
+mirror-os — Mirror OS declarative app manager
+
+Usage:
+  mirror-os install <query>              Search Flatpak + Nix, pick and install
+  mirror-os install <query> --flatpak   Force Flatpak install
+  mirror-os install <query> --nix       Force Nix package install
+  mirror-os install --flake <url> <name>  Install a pro flake app config
+  mirror-os uninstall <id>              Remove an installed app
+  mirror-os search <query>              Search without installing
+  mirror-os list                        List mirror-os managed apps
+  mirror-os update                      Update flake.lock and switch
+  mirror-os --app <id> --add-option <key> <value>  Add an option to an app
+  mirror-os snapshots [--type cosmic|apps|all]   List state snapshots
+  mirror-os rollback cosmic <sha|index>  Restore COSMIC config from snapshot
+
+Examples:
+  mirror-os install spotify
+  mirror-os install ripgrep --nix
+  mirror-os install --flake github:mirror-os/apps#devtools devtools
+  mirror-os uninstall com.spotify.Client
+  mirror-os --app com.spotify.Client --add-option "environment.PULSE_LATENCY_MSEC" "60"
+  mirror-os snapshots --type cosmic
+  mirror-os rollback cosmic 2
+EOF
+}
+
+case "${1:-}" in
+    install)   shift; cmd_install "$@" ;;
+    uninstall) shift; cmd_uninstall "$@" ;;
+    search)    shift; cmd_search "$@" ;;
+    list)      cmd_list ;;
+    update)    cmd_update ;;
+    snapshots) shift; cmd_snapshots "$@" ;;
+    rollback)  shift; cmd_rollback "$@" ;;
+    --app)
+        shift
+        app_id="${1:-}"; shift
+        case "${1:-}" in
+            --add-option) shift; cmd_add_option "$app_id" "$@" ;;
+            *) die "Unknown option for --app: ${1:-}. Try --add-option." ;;
+        esac
+        ;;
+    help|--help|-h) usage ;;
+    "")             usage; exit 1 ;;
+    *)              die "Unknown command: $1. Run 'mirror-os help' for usage." ;;
+esac

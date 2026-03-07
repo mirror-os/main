@@ -44,18 +44,18 @@ log "=== Mirror OS Sync starting ==="
 CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
 CHANGED=false
 
-# ── Detect image update (home.nix.template hash changes) ────────────────────
-# When a new image is rebased, home.nix.template may have changed.
-# home.nix is a system-managed file; user customisations belong in home-user.nix.
-HOME_NIX_TEMPLATE="/usr/share/mirror-os/home.nix.template"
-HOME_NIX_TEMPLATE_HASH_FILE="$STATE_DIR/home-nix-template.hash"
-HOME_NIX_TEMPLATE_HASH=$(sha256sum "$HOME_NIX_TEMPLATE" 2>/dev/null | cut -d' ' -f1 || echo "")
-if [ -n "$HOME_NIX_TEMPLATE_HASH" ]; then
-    if [ ! -f "$HOME_NIX_TEMPLATE_HASH_FILE" ] || \
-       [ "$HOME_NIX_TEMPLATE_HASH" != "$(cat "$HOME_NIX_TEMPLATE_HASH_FILE")" ]; then
-        log "home.nix template changed — regenerating home.nix from updated image template"
-        sed "s/__USERNAME__/$USER/g" "$HOME_NIX_TEMPLATE" > "$HM_CONFIG_DIR/home.nix"
-        echo "$HOME_NIX_TEMPLATE_HASH" > "$HOME_NIX_TEMPLATE_HASH_FILE"
+# ── Detect image update (system home.nix changed) ───────────────────────────
+# home.nix lives read-only in the OS image at
+# /usr/share/mirror-os/.  When a new image is rebased those files may change;
+# hash them to detect the update and trigger a home-manager switch.
+SYSTEM_HM_HASH_FILE="$STATE_DIR/system-hm.hash"
+SYSTEM_HM_HASH=$(sha256sum /usr/share/mirror-os/home.nix \
+    | sha256sum | cut -d' ' -f1 || echo "")
+if [ -n "$SYSTEM_HM_HASH" ]; then
+    if [ ! -f "$SYSTEM_HM_HASH_FILE" ] || \
+       [ "$SYSTEM_HM_HASH" != "$(cat "$SYSTEM_HM_HASH_FILE")" ]; then
+        log "System home.nix changed (image updated) — scheduling home-manager switch"
+        echo "$SYSTEM_HM_HASH" > "$SYSTEM_HM_HASH_FILE"
         CHANGED=true
     fi
 fi
@@ -272,6 +272,20 @@ sync_flatpak_settings
 # ── Git commit ──────────────────────────────────────────────────────────────
 cd "$STATE_DIR"
 if [ -n "$(git status --short 2>/dev/null)" ]; then
+    # Detect COSMIC config changes before staging so we can diff against HEAD.
+    COSMIC_CHANGED_COUNT=$(git diff --name-only 2>/dev/null \
+        | grep -c "^cosmic-config/" || true)
+
+    # Write a human-readable summary of which COSMIC components changed.
+    # The Software Center reads this file from git history for its rollback UI.
+    if [ "${COSMIC_CHANGED_COUNT:-0}" -gt 0 ]; then
+        git diff --name-only 2>/dev/null \
+            | grep "^cosmic-config/" \
+            | sed 's|cosmic-config/||' \
+            | sort > "$STATE_DIR/cosmic-changes.log"
+        log "COSMIC config changed: $COSMIC_CHANGED_COUNT file(s)"
+    fi
+
     git add -A
 
     CHANGED_APPS=$(git diff --cached --name-only 2>/dev/null \
@@ -282,6 +296,8 @@ if [ -n "$(git status --short 2>/dev/null)" ]; then
 
     COMMIT_MSG="sync: $(date '+%Y-%m-%d %H:%M:%S')"
     [ -n "$CHANGED_APPS" ] && COMMIT_MSG="$COMMIT_MSG | settings: $CHANGED_APPS"
+    [ "${COSMIC_CHANGED_COUNT:-0}" -gt 0 ] && \
+        COMMIT_MSG="$COMMIT_MSG | cosmic: ${COSMIC_CHANGED_COUNT} file(s)"
     [ "$CHANGED" = true ] && COMMIT_MSG="$COMMIT_MSG | apps updated"
 
     git commit -m "$COMMIT_MSG" >> "$LOG" 2>&1 && \

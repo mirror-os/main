@@ -2,8 +2,12 @@
 set -euo pipefail
 
 chmod +x /usr/bin/mirror-dev-reset
+chmod +x /usr/bin/mirror-os
 chmod +x /usr/libexec/mirror-os/mirror-nix-install
 chmod +x /usr/libexec/mirror-os/mirror-flatpak-install
+chmod +x /usr/libexec/mirror-os/mirror-init
+chmod +x /usr/libexec/mirror-os/mirror-sync
+chmod +x /usr/libexec/mirror-os/mirror-os
 
 # sudoers files must be 0440 (root-readable only) or sudo will refuse them
 chmod 0440 /etc/sudoers.d/mirror-os-chsh

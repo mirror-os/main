@@ -5,6 +5,7 @@ Description=Mirror OS home-manager config change detector
 PathChanged=%h/.config/home-manager/home-user.nix
 PathChanged=%h/.config/home-manager/flake.nix
 PathChanged=%h/.config/home-manager/flake.lock
+PathChanged=%h/.config/home-manager/apps
 MakeDirectory=true
 
 [Install]
