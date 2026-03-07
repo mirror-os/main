@@ -123,8 +123,6 @@ modules:
         destination: /usr/bin/mirror-dev-reset
       - source: fonts/99-mirror-os-defaults.conf
         destination: /etc/fonts/conf.d/99-mirror-os-defaults.conf
-      - source: usr/share/cosmic/
-        destination: /usr/share/cosmic/
 
   # Register the Flathub remote at system scope.
   # Default apps are NOT installed here — mirror-os-flatpak-init.service installs
@@ -146,9 +144,9 @@ modules:
     scripts:
       - install-mirror-software-center.sh
 
-  # Fix file permissions that the files module does not preserve:
-  # mirror-dev-reset needs +x; sudoers drop-in needs 0440 (sudo refuses it
-  # otherwise).  Also registers the localsend firewalld service at build time.
+  # Fix file permissions: BlueBuild's files module strips execute bits regardless
+  # of git mode, so chmod +x is applied here. sudoers drop-ins need 0440 (sudo
+  # refuses them otherwise). Also registers the localsend firewalld service.
   - type: script
     scripts:
       - enable-services.sh
