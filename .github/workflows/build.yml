@@ -26,6 +26,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Record the current :latest digest so we can verify it changes after build.
+      # Runs after login so skopeo can authenticate. If :latest doesn't exist yet
+      # (first build), stores "none" and the post-build check skips the comparison.
+      - name: Capture pre-build digest of :latest
+        id: pre_build
+        continue-on-error: true
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DIGEST=$(skopeo inspect --raw \
+            --creds "$GHCR_USER:$GHCR_TOKEN" \
+            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null \
+            | sha256sum | awk '{print $1}' || echo "none")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Pre-build :latest digest: $DIGEST"
+
       # Three attempts with a 60-second cooldown between each.
       # Transient failures (RPM Fusion mirror timeouts, registry blips) are
       # retried automatically.  Genuine build errors fail all three attempts
@@ -72,3 +89,28 @@ jobs:
           cosign_private_key: ${{ secrets.COSIGN_PRIVATE_KEY }}
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.pull_request.number }}
+
+      # Confirm that the :latest tag was actually updated by the build.
+      # Compares the post-build digest to the pre-build digest captured earlier.
+      # Fails the job if the tag is unchanged (silent push failure) or unreachable.
+      - name: Verify :latest tag was updated
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRE_DIGEST: ${{ steps.pre_build.outputs.digest }}
+        run: |
+          NEW=$(skopeo inspect --raw \
+            --creds "$GHCR_USER:$GHCR_TOKEN" \
+            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null \
+            | sha256sum | awk '{print $1}' || echo "none")
+          echo "Pre-build digest:  ${PRE_DIGEST:-none}"
+          echo "Post-build digest: $NEW"
+          if [ "$NEW" = "none" ]; then
+            echo "ERROR: :latest is not accessible after build — tag push may have failed"
+            exit 1
+          fi
+          if [ "${PRE_DIGEST:-none}" != "none" ] && [ "$NEW" = "$PRE_DIGEST" ]; then
+            echo "ERROR: :latest digest is unchanged — tag was not updated"
+            exit 1
+          fi
+          echo ":latest successfully updated (sha256:$NEW)"
