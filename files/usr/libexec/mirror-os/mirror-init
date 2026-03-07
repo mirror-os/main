@@ -115,11 +115,14 @@ if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
 fi
 
 # ── Step 6: Scaffold home-manager config ───────────────────────────────────
+# home.nix is NOT scaffolded — it lives read-only at /usr/share/mirror-os/home.nix
+# and is imported directly by flake.nix.  Only flake.nix and home-user.nix are
+# user-owned files that need to be scaffolded once.
 if [ ! -d "$HM_CONFIG_DIR" ]; then
     log "Scaffolding home-manager config..."
-    mkdir -p "$HM_CONFIG_DIR"
+    mkdir -p "$HM_CONFIG_DIR/apps"
 
-    for template in flake.nix home.nix home-user.nix; do
+    for template in flake.nix home-user.nix; do
         sed "s/__USERNAME__/$USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_CONFIG_DIR/$template"
@@ -128,6 +131,8 @@ if [ ! -d "$HM_CONFIG_DIR" ]; then
     log "home-manager config scaffolded at $HM_CONFIG_DIR"
 else
     log "home-manager config already exists, skipping scaffold"
+    # Ensure apps/ directory exists (in case of upgrade from older image)
+    mkdir -p "$HM_CONFIG_DIR/apps"
 fi
 
 # ── Step 7: Ensure HM config dir is a git repo with all files tracked ──────
