@@ -36,10 +36,14 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DIGEST=$(skopeo inspect --raw \
+          MANIFEST=$(skopeo inspect --raw \
             --creds "$GHCR_USER:$GHCR_TOKEN" \
-            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null \
-            | sha256sum | awk '{print $1}' || echo "none")
+            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null) || MANIFEST=""
+          if [ -n "$MANIFEST" ]; then
+            DIGEST=$(printf '%s' "$MANIFEST" | sha256sum | awk '{print $1}')
+          else
+            DIGEST="none"
+          fi
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Pre-build :latest digest: $DIGEST"
 
@@ -99,10 +103,14 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRE_DIGEST: ${{ steps.pre_build.outputs.digest }}
         run: |
-          NEW=$(skopeo inspect --raw \
+          MANIFEST=$(skopeo inspect --raw \
             --creds "$GHCR_USER:$GHCR_TOKEN" \
-            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null \
-            | sha256sum | awk '{print $1}' || echo "none")
+            docker://ghcr.io/mirror-os/mirror-os:latest 2>/dev/null) || MANIFEST=""
+          if [ -n "$MANIFEST" ]; then
+            NEW=$(printf '%s' "$MANIFEST" | sha256sum | awk '{print $1}')
+          else
+            NEW="none"
+          fi
           echo "Pre-build digest:  ${PRE_DIGEST:-none}"
           echo "Post-build digest: $NEW"
           if [ "$NEW" = "none" ]; then
