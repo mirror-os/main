@@ -383,26 +383,46 @@ update_nix() {
         return 1
     fi
 
-    local nix_json
-    # ".*" matches all packages; empty string "" matches nothing in nix search regex
-    nix_json=$(nix search nixpkgs ".*" --json 2>/dev/null) || {
-        log "nix search nixpkgs failed — preserving existing Nix catalog rows."
-        return 1
-    }
+    log "nix path: $(command -v nix); version: $(nix --version 2>&1 | head -1)"
 
-    if [ -z "$nix_json" ]; then
-        log "nix search returned empty output — preserving existing Nix catalog rows."
+    # Write output to a temp file — avoids shell variable size limits for
+    # large JSON (nixpkgs has 100k+ packages) and lets us capture stderr
+    # separately for diagnostics.
+    local tmp_out tmp_err
+    tmp_out=$(mktemp /tmp/mirror-nix-search.XXXXXX.json)
+    tmp_err=$(mktemp /tmp/mirror-nix-search.XXXXXX.err)
+
+    # ".*" matches all packages; empty string "" matches nothing in nix search regex
+    log "Running: nix search nixpkgs '.*' --json ..."
+    nix search nixpkgs ".*" --json > "$tmp_out" 2>"$tmp_err"
+    local nix_exit=$?
+
+    local nix_out_size
+    nix_out_size=$(stat -c%s "$tmp_out" 2>/dev/null || echo 0)
+
+    if [ -s "$tmp_err" ]; then
+        log "nix search stderr (first 20 lines):"
+        head -20 "$tmp_err" >> "$LOG_FILE"
+    fi
+
+    log "nix search exit=$nix_exit; stdout size=${nix_out_size} bytes"
+
+    if [ "$nix_exit" -ne 0 ] || [ "$nix_out_size" -eq 0 ]; then
+        log "nix search nixpkgs failed or returned empty output — preserving existing Nix catalog rows."
+        rm -f "$tmp_out" "$tmp_err"
         return 1
     fi
 
-    echo "$nix_json" | python3 - "$CATALOG_DB" << 'PYEOF'
+    python3 - "$CATALOG_DB" "$tmp_out" << 'PYEOF'
 import sys, json, sqlite3
 from datetime import datetime, timezone
 
-db_path = sys.argv[1]
+db_path  = sys.argv[1]
+json_file = sys.argv[2]
 
 try:
-    data = json.load(sys.stdin)
+    with open(json_file) as f:
+        data = json.load(f)
 except Exception as e:
     print(f"mirror-catalog-update: failed to parse nix search JSON: {e}", file=sys.stderr)
     sys.exit(1)
@@ -475,6 +495,7 @@ conn.close()
 print(f"Nix catalog updated: {len(rows)} packages indexed.")
 PYEOF
     local rc=$?
+    rm -f "$tmp_out" "$tmp_err"
     if [ $rc -eq 0 ]; then
         log "Nix catalog updated successfully."
     else
