@@ -8,10 +8,13 @@ chmod +x /usr/libexec/mirror-os/mirror-flatpak-install
 chmod +x /usr/libexec/mirror-os/mirror-init
 chmod +x /usr/libexec/mirror-os/mirror-sync
 chmod +x /usr/libexec/mirror-os/mirror-os
+chmod +x /usr/libexec/mirror-os/mirror-catalog-update
 
 # sudoers files must be 0440 (root-readable only) or sudo will refuse them
 chmod 0440 /etc/sudoers.d/mirror-os-chsh
 chmod 0440 /etc/sudoers.d/mirror-os-nix-install
+
+systemctl --global enable mirror-os-catalog.timer
 
 firewall-offline-cmd --add-service=localsend
 # waydroid0 interface trust is declared statically via

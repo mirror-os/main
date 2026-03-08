@@ -1,0 +1,15 @@
+[Unit]
+Description=Mirror OS catalog database update
+After=mirror-os-init.service
+Wants=mirror-os-init.service
+ConditionPathExists=%h/.local/share/mirror-os/.init-complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/mirror-os/mirror-catalog-update
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=default.target

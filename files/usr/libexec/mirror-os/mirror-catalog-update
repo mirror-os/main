@@ -1,0 +1,493 @@
+#!/usr/bin/env bash
+# mirror-catalog-update — Mirror OS app catalog database updater
+# Populates ~/.local/share/mirror-os/catalog.db (SQLite, WAL mode) with:
+#   - All Flathub apps from the local AppStream XML cache (no network required)
+#   - All nixpkgs packages from `nix search nixpkgs "" --json`
+#
+# Usage:
+#   mirror-catalog-update [--source flatpak|nix|all]
+#
+# Run by mirror-os-catalog.timer (10 min after boot, then hourly).
+# Safe to run manually: flock prevents concurrent executions.
+
+set -uo pipefail
+
+export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
+
+CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
+LOCK_FILE="/tmp/mirror-catalog-update.lock"
+LOG_FILE="$HOME/.local/share/mirror-os/catalog-update.log"
+APPSTREAM_GZ="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml.gz"
+APPSTREAM_XML="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml"
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE" >&2; }
+
+# Rotate log if over 2 MB
+[ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ] \
+    && mv "$LOG_FILE" "${LOG_FILE}.old"
+
+# Acquire lock — exit silently if another instance is running
+exec 9>"$LOCK_FILE"
+if ! flock -w 5 9; then
+    log "Another mirror-catalog-update is running; exiting."
+    exit 0
+fi
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+
+SOURCE="all"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source) SOURCE="$2"; shift 2 ;;
+        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|all]" >&2; exit 1 ;;
+    esac
+done
+
+case "$SOURCE" in
+    flatpak|nix|all) ;;
+    *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
+esac
+
+# ── Ensure DB directory exists ───────────────────────────────────────────────
+
+mkdir -p "$(dirname "$CATALOG_DB")"
+
+# ── Flatpak catalog update ───────────────────────────────────────────────────
+
+update_flatpak() {
+    log "Updating Flatpak catalog from AppStream XML..."
+
+    local appstream_path=""
+    if [ -f "$APPSTREAM_GZ" ]; then
+        appstream_path="$APPSTREAM_GZ"
+    elif [ -f "$APPSTREAM_XML" ]; then
+        appstream_path="$APPSTREAM_XML"
+    else
+        log "AppStream XML not found at $APPSTREAM_GZ or $APPSTREAM_XML — skipping Flatpak update."
+        log "Tip: run 'flatpak update' to refresh the Flathub metadata cache."
+        return 1
+    fi
+
+    python3 - "$CATALOG_DB" "$appstream_path" << 'PYEOF'
+import sys, os, gzip, json, sqlite3, re
+from datetime import datetime, timezone
+from html.parser import HTMLParser
+import xml.etree.ElementTree as ET
+
+db_path      = sys.argv[1]
+appstream    = sys.argv[2]
+
+# ── HTML tag stripper ──────────────────────────────────────────────────────
+class TagStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._parts = []
+    def handle_data(self, data):
+        self._parts.append(data)
+    def get_text(self):
+        return ' '.join(p.strip() for p in self._parts if p.strip())
+
+def strip_html(markup):
+    if not markup:
+        return ''
+    s = TagStripper()
+    # ElementTree gives us a mixed-content string; serialise it first
+    try:
+        s.feed(markup if isinstance(markup, str) else ET.tostring(markup, encoding='unicode', method='html'))
+    except Exception:
+        pass
+    return s.get_text()
+
+def elem_text(elem, tag):
+    """First matching child text, or ''."""
+    child = elem.find(tag)
+    return (child.text or '').strip() if child is not None else ''
+
+def oars_rating(comp):
+    """Summarise OARS content_rating to 'all'/'moderate'/'intense'."""
+    cr = comp.find("content_rating[@type='oars-1.1']")
+    if cr is None:
+        cr = comp.find('content_rating')
+    if cr is None:
+        return 'all'
+    values = [v.text or '' for v in cr.findall('content_attribute')]
+    if any(v in ('intense',) for v in values):
+        return 'intense'
+    if any(v in ('moderate',) for v in values):
+        return 'moderate'
+    return 'all'
+
+def desc_to_text(comp):
+    """Convert <description> mixed XML to plain text."""
+    desc_elem = comp.find('description')
+    if desc_elem is None:
+        return ''
+    # Serialize to HTML-ish string, then strip tags
+    try:
+        raw = ET.tostring(desc_elem, encoding='unicode', method='html')
+        s = TagStripper()
+        s.feed(raw)
+        return s.get_text()
+    except Exception:
+        return (desc_elem.text or '').strip()
+
+# ── Parse AppStream XML ────────────────────────────────────────────────────
+opener = gzip.open if appstream.endswith('.gz') else open
+try:
+    with opener(appstream, 'rb') as f:
+        root = ET.parse(f).getroot()
+except Exception as e:
+    print(f"mirror-catalog-update: failed to parse AppStream XML: {e}", file=sys.stderr)
+    sys.exit(1)
+
+rows     = []
+fts_rows = []
+
+for comp in root.iter('component'):
+    ctype = comp.get('type', '')
+    if ctype not in ('desktop-application', 'console-application', 'desktop'):
+        continue
+
+    app_id = elem_text(comp, 'id')
+    if not app_id:
+        continue
+
+    name    = elem_text(comp, 'name')
+    summary = elem_text(comp, 'summary')
+    desc    = desc_to_text(comp)
+
+    # Developer name (AppStream 0.x vs 1.x schema)
+    developer = elem_text(comp, 'developer_name')
+    if not developer:
+        dev_elem = comp.find('developer')
+        if dev_elem is not None:
+            developer = elem_text(dev_elem, 'name')
+
+    license_ = elem_text(comp, 'project_license')
+
+    # URLs
+    homepage = bugtracker = donation = ''
+    for url_elem in comp.findall('url'):
+        utype = url_elem.get('type', '')
+        val   = (url_elem.text or '').strip()
+        if utype == 'homepage':    homepage   = val
+        elif utype == 'bugtracker': bugtracker = val
+        elif utype == 'donation':   donation   = val
+
+    # Categories
+    cats = [c.text.strip() for c in comp.findall('categories/category') if c.text]
+
+    # Keywords
+    kws = [k.text.strip() for k in comp.findall('keywords/keyword') if k.text]
+
+    # Icon (prefer cached 128px, then any cached)
+    icon_name = ''
+    best_size = 0
+    for icon in comp.findall('icon'):
+        if icon.get('type') == 'cached':
+            try:
+                sz = int(icon.get('width', 0))
+            except ValueError:
+                sz = 0
+            if sz > best_size or not icon_name:
+                icon_name = (icon.text or '').strip()
+                icon_name = re.sub(r'\.(png|svg|xpm)$', '', icon_name, flags=re.IGNORECASE)
+                best_size = sz
+
+    # Screenshots (source images only)
+    screenshots = []
+    for ss in comp.findall('screenshots/screenshot'):
+        caption = elem_text(ss, 'caption')
+        for img in ss.findall('image'):
+            if img.get('type', 'source') == 'source':
+                url = (img.text or '').strip()
+                if url:
+                    screenshots.append({
+                        'url':     url,
+                        'caption': caption,
+                        'width':   int(img.get('width', 0) or 0),
+                        'height':  int(img.get('height', 0) or 0),
+                    })
+                break  # one source image per screenshot
+
+    # Content rating
+    content_rating = oars_rating(comp)
+
+    # Flatpak bundle ref
+    flatpak_ref = ''
+    bundle = comp.find("bundle[@type='flatpak']")
+    if bundle is not None:
+        flatpak_ref = (bundle.text or '').strip()
+
+    # Releases (newest first; keep up to 10)
+    releases_out = []
+    version = ''
+    release_date = ''
+    release_timestamp = 0
+    releases_elem = comp.find('releases')
+    if releases_elem is not None:
+        for rel in list(releases_elem.findall('release'))[:10]:
+            rv   = rel.get('version', '')
+            rts  = rel.get('timestamp', '')
+            rdate = rel.get('date', '')
+
+            # Prefer explicit date attr; fall back to converting timestamp
+            if rdate:
+                pass
+            elif rts and rts.isdigit():
+                try:
+                    rdate = datetime.fromtimestamp(int(rts), tz=timezone.utc).strftime('%Y-%m-%d')
+                except Exception:
+                    rdate = ''
+
+            ts_int = int(rts) if rts and rts.isdigit() else 0
+
+            rdesc_elem = rel.find('description')
+            rdesc = desc_to_text(rel) if rdesc_elem is not None else ''
+
+            releases_out.append({
+                'version':     rv,
+                'date':        rdate,
+                'timestamp':   ts_int,
+                'description': rdesc,
+            })
+            if not version:
+                version           = rv
+                release_date      = rdate
+                release_timestamp = ts_int
+
+    # Flathub verification
+    verified = 0
+    for val_elem in comp.findall('custom/value'):
+        if val_elem.get('key') == 'flathub::verification::verified':
+            verified = 1 if (val_elem.text or '').strip().lower() in ('true', '1') else 0
+
+    rows.append((
+        app_id, name, summary, desc,
+        version, release_date, release_timestamp,
+        developer, license_, homepage, bugtracker, donation,
+        json.dumps(cats), json.dumps(kws), icon_name,
+        json.dumps(screenshots), content_rating, flatpak_ref,
+        json.dumps(releases_out), verified, 0,
+    ))
+
+    fts_rows.append((
+        'flatpak', app_id, name,
+        summary or desc[:200],
+        developer,
+        ' '.join(cats),
+    ))
+
+# ── Write to DB ────────────────────────────────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=30)
+
+# Schema init (idempotent)
+conn.executescript("""
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+
+CREATE TABLE IF NOT EXISTS flatpak_apps (
+    app_id            TEXT PRIMARY KEY,
+    name              TEXT NOT NULL DEFAULT '',
+    summary           TEXT NOT NULL DEFAULT '',
+    description       TEXT NOT NULL DEFAULT '',
+    version           TEXT NOT NULL DEFAULT '',
+    release_date      TEXT NOT NULL DEFAULT '',
+    release_timestamp INTEGER NOT NULL DEFAULT 0,
+    developer         TEXT NOT NULL DEFAULT '',
+    license           TEXT NOT NULL DEFAULT '',
+    homepage          TEXT NOT NULL DEFAULT '',
+    bugtracker_url    TEXT NOT NULL DEFAULT '',
+    donation_url      TEXT NOT NULL DEFAULT '',
+    categories        TEXT NOT NULL DEFAULT '[]',
+    keywords          TEXT NOT NULL DEFAULT '[]',
+    icon_name         TEXT NOT NULL DEFAULT '',
+    screenshots       TEXT NOT NULL DEFAULT '[]',
+    content_rating    TEXT NOT NULL DEFAULT '',
+    flatpak_ref       TEXT NOT NULL DEFAULT '',
+    releases_json     TEXT NOT NULL DEFAULT '[]',
+    verified          INTEGER NOT NULL DEFAULT 0,
+    monthly_downloads INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS nix_packages (
+    attr             TEXT PRIMARY KEY,
+    pname            TEXT NOT NULL,
+    version          TEXT NOT NULL DEFAULT '',
+    description      TEXT NOT NULL DEFAULT '',
+    long_description TEXT NOT NULL DEFAULT '',
+    homepage         TEXT NOT NULL DEFAULT '',
+    license          TEXT NOT NULL DEFAULT '',
+    maintainers      TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS catalog_meta (
+    source     TEXT PRIMARY KEY,
+    updated_at TEXT NOT NULL,
+    row_count  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
+    source,
+    id,
+    name,
+    description,
+    developer,
+    categories,
+    tokenize = 'unicode61 remove_diacritics 1'
+);
+""")
+
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+with conn:
+    conn.execute("DELETE FROM flatpak_apps")
+    conn.executemany("""
+        INSERT OR REPLACE INTO flatpak_apps VALUES (
+            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+        )
+    """, rows)
+
+    conn.execute("DELETE FROM catalog_fts WHERE source='flatpak'")
+    conn.executemany(
+        "INSERT INTO catalog_fts(source,id,name,description,developer,categories) VALUES (?,?,?,?,?,?)",
+        fts_rows,
+    )
+
+    conn.execute("""
+        INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count)
+        VALUES ('flatpak', ?, ?)
+    """, (now, len(rows)))
+
+conn.close()
+print(f"Flatpak catalog updated: {len(rows)} apps indexed.")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "Flatpak catalog updated successfully."
+    else
+        log "Flatpak catalog update failed (exit $rc)."
+        return $rc
+    fi
+}
+
+# ── Nix catalog update ───────────────────────────────────────────────────────
+
+update_nix() {
+    log "Updating Nix catalog from nixpkgs (this may be slow on first run)..."
+
+    if ! command -v nix &>/dev/null; then
+        log "Nix not available — skipping Nix catalog update."
+        return 1
+    fi
+
+    local nix_json
+    nix_json=$(nix search nixpkgs "" --json 2>/dev/null) || {
+        log "nix search nixpkgs failed — preserving existing Nix catalog rows."
+        return 1
+    }
+
+    echo "$nix_json" | python3 - "$CATALOG_DB" << 'PYEOF'
+import sys, json, sqlite3
+from datetime import datetime, timezone
+
+db_path = sys.argv[1]
+
+try:
+    data = json.load(sys.stdin)
+except Exception as e:
+    print(f"mirror-catalog-update: failed to parse nix search JSON: {e}", file=sys.stderr)
+    sys.exit(1)
+
+rows     = []
+fts_rows = []
+for key, val in data.items():
+    # key: "legacyPackages.x86_64-linux.attr" or "packages.x86_64-linux.attr"
+    attr  = key.split('.')[-1] if '.' in key else key
+    pname = val.get('pname', attr)
+    ver   = val.get('version', '')
+    desc  = val.get('description', '').replace('\n', ' ').strip()
+
+    rows.append((attr, pname, ver, desc, '', '', '', '[]'))
+    fts_rows.append(('nix', attr, pname, desc[:200], '', ''))
+
+conn = sqlite3.connect(db_path, timeout=30)
+
+# Ensure schema exists (in case only nix runs first)
+conn.executescript("""
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+
+CREATE TABLE IF NOT EXISTS flatpak_apps (
+    app_id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '',
+    release_date TEXT NOT NULL DEFAULT '', release_timestamp INTEGER NOT NULL DEFAULT 0,
+    developer TEXT NOT NULL DEFAULT '', license TEXT NOT NULL DEFAULT '',
+    homepage TEXT NOT NULL DEFAULT '', bugtracker_url TEXT NOT NULL DEFAULT '',
+    donation_url TEXT NOT NULL DEFAULT '', categories TEXT NOT NULL DEFAULT '[]',
+    keywords TEXT NOT NULL DEFAULT '[]', icon_name TEXT NOT NULL DEFAULT '',
+    screenshots TEXT NOT NULL DEFAULT '[]', content_rating TEXT NOT NULL DEFAULT '',
+    flatpak_ref TEXT NOT NULL DEFAULT '', releases_json TEXT NOT NULL DEFAULT '[]',
+    verified INTEGER NOT NULL DEFAULT 0, monthly_downloads INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS nix_packages (
+    attr TEXT PRIMARY KEY, pname TEXT NOT NULL, version TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', long_description TEXT NOT NULL DEFAULT '',
+    homepage TEXT NOT NULL DEFAULT '', license TEXT NOT NULL DEFAULT '',
+    maintainers TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS catalog_meta (
+    source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
+    source, id, name, description, developer, categories,
+    tokenize = 'unicode61 remove_diacritics 1'
+);
+""")
+
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+with conn:
+    conn.execute("DELETE FROM nix_packages")
+    conn.executemany(
+        "INSERT OR REPLACE INTO nix_packages VALUES (?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.execute("DELETE FROM catalog_fts WHERE source='nix'")
+    conn.executemany(
+        "INSERT INTO catalog_fts(source,id,name,description,developer,categories) VALUES (?,?,?,?,?,?)",
+        fts_rows,
+    )
+    conn.execute("""
+        INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count)
+        VALUES ('nix', ?, ?)
+    """, (now, len(rows)))
+
+conn.close()
+print(f"Nix catalog updated: {len(rows)} packages indexed.")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "Nix catalog updated successfully."
+    else
+        log "Nix catalog update failed (exit $rc)."
+        return $rc
+    fi
+}
+
+# ── Run ──────────────────────────────────────────────────────────────────────
+
+log "Starting catalog update (source: $SOURCE)..."
+
+case "$SOURCE" in
+    flatpak) update_flatpak ;;
+    nix)     update_nix ;;
+    all)
+        update_flatpak || true
+        update_nix     || true
+        ;;
+esac
+
+log "Catalog update complete."

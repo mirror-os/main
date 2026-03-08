@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS catalog database periodic refresh
+
+[Timer]
+OnBootSec=600s
+OnCalendar=*:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
