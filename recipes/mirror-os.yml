@@ -69,6 +69,7 @@ modules:
   - type: rpm-ostree
     install:
       - adw-gtk3-theme
+      - bootc
       - cups
       - distrobox
       - dpkg

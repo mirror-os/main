@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# mirror-update — update the Mirror OS image
+# Stages the latest image for the next reboot. Does NOT reboot automatically.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
+echo "Checking for Mirror OS updates..."
+echo "(Image signature will be verified automatically.)"
+echo ""
+
+bootc upgrade
+
+echo ""
+echo "Run 'bootc status' to check if an update was staged."
+echo "Reboot when ready to apply:  systemctl reboot"
