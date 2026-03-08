@@ -384,10 +384,16 @@ update_nix() {
     fi
 
     local nix_json
-    nix_json=$(nix search nixpkgs "" --json 2>/dev/null) || {
+    # ".*" matches all packages; empty string "" matches nothing in nix search regex
+    nix_json=$(nix search nixpkgs ".*" --json 2>/dev/null) || {
         log "nix search nixpkgs failed — preserving existing Nix catalog rows."
         return 1
     }
+
+    if [ -z "$nix_json" ]; then
+        log "nix search returned empty output — preserving existing Nix catalog rows."
+        return 1
+    fi
 
     echo "$nix_json" | python3 - "$CATALOG_DB" << 'PYEOF'
 import sys, json, sqlite3
