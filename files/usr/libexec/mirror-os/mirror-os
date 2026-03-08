@@ -85,6 +85,7 @@ try:
             FROM catalog_fts c
             JOIN flatpak_apps f ON c.id = f.app_id
             WHERE c.source = 'flatpak' AND catalog_fts MATCH ?
+            ORDER BY bm25(catalog_fts, 0, 10, 10, 1, 1, 1)
             LIMIT ?
         """, (fts_q, limit)).fetchall()
     else:
@@ -93,6 +94,7 @@ try:
             FROM catalog_fts c
             JOIN nix_packages n ON c.id = n.attr
             WHERE c.source = 'nix' AND catalog_fts MATCH ?
+            ORDER BY bm25(catalog_fts, 0, 10, 10, 1, 1, 1)
             LIMIT ?
         """, (fts_q, limit)).fetchall()
 
@@ -167,13 +169,15 @@ for key, val in list(data.items())[:20]:
 auto_select_best() {
     local flat_raw="$1"
     local nix_raw="$2"
+    local query="${3:-}"
 
-    python3 - "$CATALOG_DB" "$flat_raw" "$nix_raw" << 'PYEOF'
+    python3 - "$CATALOG_DB" "$flat_raw" "$nix_raw" "$query" << 'PYEOF'
 import sys, sqlite3, json, re
 
 db_path  = sys.argv[1]
 flat_raw = sys.argv[2].strip()
 nix_raw  = sys.argv[3].strip()
+query    = sys.argv[4].lower().strip() if len(sys.argv) > 4 else ''
 
 def parse_tsv(raw, source):
     result = []
@@ -263,10 +267,21 @@ def negate_version_key(vk):
             result.append((seg[0], seg[1]))
     return tuple(result)
 
+def name_match(e):
+    """Return -1 if query tokens appear in the app id or name, 0 otherwise.
+    Negative so that name matches sort first in ascending order."""
+    if not query:
+        return 0
+    id_lower   = e['id'].lower()
+    name_lower = e['name'].lower()
+    tokens     = query.split()
+    return -1 if any(t in id_lower or t in name_lower for t in tokens) else 0
+
 def sort_key(e):
+    nm = name_match(e)   # -1 = name match (sorts first), 0 = no match
     vk = negate_version_key(version_key(e['version']))
     dk = date_key(e['release_date'])
-    return (vk, dk)
+    return (nm, vk, dk)
 
 enriched.sort(key=sort_key)
 best = enriched[0]
@@ -440,7 +455,7 @@ cmd_install() {
             selection=$(pick_result "$flat_raw" "") || { echo "Cancelled."; exit 0; }
         else
             local auto_out
-            auto_out=$(auto_select_best "$flat_raw" "") || die "Could not determine best match for: $query"
+            auto_out=$(auto_select_best "$flat_raw" "" "$query") || die "Could not determine best match for: $query"
             selection=$(head -1 <<< "$auto_out")
             local meta_json
             meta_json=$(tail -1 <<< "$auto_out")
@@ -468,7 +483,7 @@ cmd_install() {
             selection=$(pick_result "" "$nix_raw") || { echo "Cancelled."; exit 0; }
         else
             local auto_out
-            auto_out=$(auto_select_best "" "$nix_raw") || die "Could not determine best match for: $query"
+            auto_out=$(auto_select_best "" "$nix_raw" "$query") || die "Could not determine best match for: $query"
             selection=$(head -1 <<< "$auto_out")
             local meta_json
             meta_json=$(tail -1 <<< "$auto_out")
@@ -488,12 +503,8 @@ cmd_install() {
     # Smart detection: search both sources
     echo "Searching for '$query'..."
     local flat_raw nix_raw
-    flat_raw=$(flatpak_search "$query") &
-    local flat_pid=$!
-    nix_raw=$(nix_search "$query") &
-    local nix_pid=$!
-    wait $flat_pid || flat_raw=""
-    wait $nix_pid  || nix_raw=""
+    flat_raw=$(flatpak_search "$query")
+    nix_raw=$(nix_search "$query")
 
     [ -z "$flat_raw" ] && [ -z "$nix_raw" ] && die "No results found for: $query"
 
@@ -503,7 +514,7 @@ cmd_install() {
         selection=$(pick_result "$flat_raw" "$nix_raw") || { echo "Cancelled."; exit 0; }
     else
         local auto_out
-        auto_out=$(auto_select_best "$flat_raw" "$nix_raw") || die "Could not determine best match for: $query"
+        auto_out=$(auto_select_best "$flat_raw" "$nix_raw" "$query") || die "Could not determine best match for: $query"
         selection=$(head -1 <<< "$auto_out")
         local meta_json
         meta_json=$(tail -1 <<< "$auto_out")
