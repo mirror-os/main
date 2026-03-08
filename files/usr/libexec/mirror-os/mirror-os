@@ -23,10 +23,22 @@ APPS_DIR="$HOME/.config/home-manager/apps"
 HM_CONFIG_DIR="$HOME/.config/home-manager"
 FLAKE_NIX="$HM_CONFIG_DIR/flake.nix"
 CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
+LOG_FILE="$HOME/.local/share/mirror-os/mirror-os.log"
+VERBOSE_LOG=false
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-die() { echo "mirror-os: error: $*" >&2; exit 1; }
+log() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    local entry="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$entry" >> "$LOG_FILE"
+    $VERBOSE_LOG && echo "$entry" >&2 || true
+    if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv "$LOG_FILE" "${LOG_FILE}.1"
+    fi
+}
+
+die() { log "ERROR: $*"; echo "mirror-os: error: $*" >&2; exit 1; }
 
 need_init() {
     [ -f "$HOME/.local/share/mirror-os/.init-complete" ] || \
@@ -38,6 +50,7 @@ need_init() {
 }
 
 trigger_switch() {
+    log "Triggering Home Manager switch"
     echo "Applying changes..."
     git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
     systemctl --user start mirror-os-sync.service 2>/dev/null || \
@@ -437,6 +450,7 @@ cmd_install() {
         echo "Locking flake inputs..."
         (cd "$HM_CONFIG_DIR" && nix flake lock) || die "nix flake lock failed"
         write_pro_flake_module "$input_name" "$safe_name" "$out_file"
+        log "install: pro flake '${safe_name}' from ${flake_url}"
         echo "Installed pro flake: ${safe_name}"
         trigger_switch
         return
@@ -467,6 +481,7 @@ cmd_install() {
         out_file=$(module_file "$id")
         [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
         write_flatpak_module "$id" "$name" "$out_file"
+        log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch
         return
@@ -495,6 +510,7 @@ cmd_install() {
         out_file=$(module_file "$id")
         [ -f "$out_file" ] && die "Package '${id}' is already installed (${out_file})."
         write_nix_module "$id" "$name" "$out_file"
+        log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch
         return
@@ -529,9 +545,11 @@ cmd_install() {
 
     if [ "$src" = "flatpak" ]; then
         write_flatpak_module "$id" "$name" "$out_file"
+        log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
     else
         write_nix_module "$id" "$name" "$out_file"
+        log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
     fi
     trigger_switch
@@ -592,6 +610,7 @@ cmd_uninstall() {
     fi
 
     rm "$out_file"
+    log "uninstall: '${id}'"
     echo "Uninstalled: ${id}"
     trigger_switch
 }
@@ -1043,8 +1062,10 @@ PYEOF
 
 cmd_update() {
     need_init
+    log "update: running nix flake update"
     echo "Updating flake inputs..."
     (cd "$HM_CONFIG_DIR" && nix flake update) || die "nix flake update failed"
+    log "update: flake update complete"
     trigger_switch
 }
 
@@ -1193,6 +1214,7 @@ cmd_rollback() {
                 die "Failed to restore COSMIC config files."
             rm -rf "$tmpdir"
 
+            log "rollback: COSMIC config restored to snapshot ${sha:0:7}"
             echo "COSMIC config restored to snapshot ${sha:0:7}."
             echo "Reopen COSMIC Settings or log out/in to see all changes."
             ;;
@@ -1219,6 +1241,7 @@ cmd_add_option() {
     fi
 
     sed -i "$(grep -n '^}' "$out_file" | tail -1 | cut -d: -f1)i\\  ${key} = ${value};" "$out_file"
+    log "add-option: '${app_id}' ${key} = ${value}"
     echo "Added option '${key} = ${value}' to ${app_id}."
     trigger_switch
 }
@@ -1238,6 +1261,7 @@ cmd_remove_option() {
     fi
 
     sed -i "/^  ${key} = /d" "$out_file"
+    log "remove-option: '${app_id}' ${key}"
     echo "Removed option '${key}' from ${app_id}."
     trigger_switch
 }
@@ -1271,6 +1295,9 @@ Usage:
   mirror-os --app <id> --show-config               Print the app's .nix module
   mirror-os --app <id> --edit                      Open the app's .nix in $EDITOR
 
+Global flags (work with any command):
+  --log                                            Print diagnostic log output to the terminal
+
 Examples:
   mirror-os install spotify
   mirror-os install spotify --pick
@@ -1292,6 +1319,16 @@ Examples:
   mirror-os rollback cosmic 2
 EOF
 }
+
+# Strip --log from args and set VERBOSE_LOG before dispatching
+_args=()
+for _arg in "$@"; do
+    [ "$_arg" = "--log" ] && VERBOSE_LOG=true || _args+=("$_arg")
+done
+set -- "${_args[@]+"${_args[@]}"}"
+unset _arg _args
+
+log "CMD: ${*}${VERBOSE_LOG:+ [--log]}"
 
 case "${1:-}" in
     install)   shift; cmd_install "$@" ;;

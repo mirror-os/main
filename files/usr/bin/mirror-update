@@ -7,11 +7,27 @@ if [ "$(id -u)" -ne 0 ]; then
     exec sudo "$0" "$@"
 fi
 
+LOG="/var/log/mirror-os-update.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv "$LOG" "${LOG}.1"
+        touch "$LOG"
+    fi
+}
+
+log "=== mirror-update: checking for updates ==="
+
 echo "Checking for Mirror OS updates..."
 echo "(Image signature will be verified automatically.)"
 echo ""
 
-bootc upgrade
+if bootc upgrade; then
+    log "bootc upgrade completed successfully"
+else
+    log "ERROR: bootc upgrade failed (exit code $?)"
+fi
 
 echo ""
 echo "Run 'bootc status' to check if an update was staged."

@@ -13,7 +13,13 @@ MANAGED_LIST="/usr/share/mirror-os/managed-apps.list"
 PINNED_LIST="/usr/share/mirror-os/pinned-apps.list"
 LOG="/var/log/mirror-os-flatpak.log"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv "$LOG" "${LOG}.1"
+        touch "$LOG"
+    fi
+}
 
 mkdir -p /var/lib/mirror-os
 

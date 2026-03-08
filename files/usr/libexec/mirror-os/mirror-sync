@@ -19,7 +19,7 @@ mkdir -p "$STATE_DIR" "$(dirname "$LOG")"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
-    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
+    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
         mv "$LOG" "${LOG}.1"
         touch "$LOG"
     fi

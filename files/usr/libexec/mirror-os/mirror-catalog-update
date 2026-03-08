@@ -24,9 +24,9 @@ APPSTREAM_XML="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE" >&2; }
 
-# Rotate log if over 2 MB
-[ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ] \
-    && mv "$LOG_FILE" "${LOG_FILE}.old"
+# Rotate log if over 1 MB
+[ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)" -gt 1048576 ] \
+    && mv "$LOG_FILE" "${LOG_FILE}.1"
 
 # Acquire lock — exit silently if another instance is running
 exec 9>"$LOCK_FILE"

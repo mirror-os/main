@@ -1,0 +1,14 @@
+# Mirror OS system-scope log rotation
+# Covers logs written as root; user-scope logs rotate inline in each script.
+
+/var/log/mirror-os-flatpak.log
+/var/log/mirror-os-update.log {
+    missingok
+    notifempty
+    size 1M
+    rotate 2
+    compress
+    delaycompress
+    nocreate
+    copytruncate
+}
