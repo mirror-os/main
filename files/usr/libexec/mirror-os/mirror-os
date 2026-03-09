@@ -252,24 +252,29 @@ enriched = []
 for c in candidates:
     version = ''
     release_date = ''
+    verified = False
     if db_available:
         try:
             if c['source'] == 'flatpak':
                 row = conn.execute(
-                    "SELECT version, release_date FROM flatpak_apps WHERE app_id = ?",
+                    "SELECT version, release_date, verified FROM flatpak_apps WHERE app_id = ?",
                     (c['id'],)
                 ).fetchone()
+                if row:
+                    version      = row[0] or ''
+                    release_date = row[1] or ''
+                    verified     = bool(row[2])
             else:
                 row = conn.execute(
                     "SELECT version, '' FROM nix_packages WHERE attr = ?",
                     (c['id'],)
                 ).fetchone()
-            if row:
-                version      = row[0] or ''
-                release_date = row[1] or ''
+                if row:
+                    version      = row[0] or ''
+                    release_date = row[1] or ''
         except Exception:
             pass
-    enriched.append({**c, 'version': version, 'release_date': release_date})
+    enriched.append({**c, 'version': version, 'release_date': release_date, 'verified': verified})
 
 if db_available:
     conn.close()
@@ -295,9 +300,10 @@ def compare(a, b):
 
     Priority order:
       1. Title match quality (-2 > -1 > 0)
-      2. Version comparison — only when BOTH have version data (higher version wins)
-      3. Source preference — Flatpak over Nix (handles missing-version cases gracefully)
-      4. Release date — older = more established (ascending)
+      2. Flathub verified badge — verified Flatpak wins over unverified regardless of version
+      3. Version comparison — only when BOTH have version data (higher version wins)
+      4. Source preference — Flatpak over Nix (handles missing-version cases gracefully)
+      5. Release date — older = more established (ascending)
     """
     # 1. Name/title match quality
     nm_a = name_match(a)
@@ -305,13 +311,17 @@ def compare(a, b):
     if nm_a != nm_b:
         return nm_a - nm_b
 
-    # 2. Version comparison (only when both sides have version data)
+    # 2. Flathub verified badge: verified Flatpak beats everything else
+    if a['verified'] != b['verified']:
+        return -1 if a['verified'] else 1  # verified sorts first
+
+    # 3. Version comparison (only when both sides have version data)
     vk_a = version_key(a['version'])
     vk_b = version_key(b['version'])
     if vk_a and vk_b and vk_a != vk_b:
         return -1 if vk_a > vk_b else 1  # higher version sorts first
 
-    # 3. Source preference: Flatpak > Nix
+    # 4. Source preference: Flatpak > Nix
     #    This handles the common case where Flatpak lacks AppStream release info
     #    (empty version) but is still the better/more up-to-date choice for GUI apps.
     src_a = 0 if a['source'] == 'flatpak' else 1
@@ -319,7 +329,7 @@ def compare(a, b):
     if src_a != src_b:
         return src_a - src_b
 
-    # 4. Release date: older = more established (ascending)
+    # 5. Release date: older = more established (ascending)
     dk_a = date_key(a['release_date'])
     dk_b = date_key(b['release_date'])
     if dk_a < dk_b:
