@@ -80,11 +80,14 @@
   # xdg-desktop-portal-cosmic does not implement the Settings portal; the gtk
   # backend reads from org.gnome.desktop.interface:color-scheme, which COSMIC
   # already keeps up to date. All other portal interfaces remain on COSMIC.
-  home.file.".config/xdg-desktop-portal/portals.conf".text = ''
-    [preferred]
-    default=cosmic
-    org.freedesktop.impl.portal.Settings=gtk
-  '';
+  home.file.".config/xdg-desktop-portal/portals.conf" = {
+    force = true;
+    text = ''
+      [preferred]
+      default=cosmic
+      org.freedesktop.impl.portal.Settings=gtk
+    '';
+  };
 
   # Flatpak — global overrides for theming and window decorations.
   # Each per-app module in apps/ sets services.flatpak.enable = true so
