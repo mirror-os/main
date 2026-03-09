@@ -483,7 +483,7 @@ cmd_install() {
     mkdir -p "$APPS_DIR"
 
     local force_flatpak=false force_nix=false use_flake=false pick=false
-    local query="" flake_url="" flake_name=""
+    local query="" flake_url="" flake_name="" override_name=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -491,6 +491,7 @@ cmd_install() {
             --nix)         force_nix=true; shift ;;
             --flake)       use_flake=true; flake_url="$2"; flake_name="$3"; shift 3 ;;
             --pick|--interactive) pick=true; shift ;;
+            --name)        override_name="$2"; shift 2 ;;
             *)             query="$1"; shift ;;
         esac
     done
@@ -517,8 +518,45 @@ cmd_install() {
 
     [ -z "$query" ] && die "Usage: mirror-os install <app name or ID> [--flatpak | --nix] [--pick]"
 
-    # Force-flatpak: search only Flatpak
+    # ── Helper: resolve display name from catalog DB ──────────────────────────
+    # Prints name from DB for exact id+source, or empty string if not found.
+    _lookup_name() {
+        local lookup_id="$1" lookup_source="$2"
+        [ -f "$CATALOG_DB" ] || { echo ""; return; }
+        python3 - "$CATALOG_DB" "$lookup_id" "$lookup_source" << 'PYEOF'
+import sys, sqlite3
+db, app_id, source = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    conn = sqlite3.connect(db, timeout=5)
+    conn.execute("PRAGMA query_only = ON")
+    if source == 'flatpak':
+        row = conn.execute("SELECT name FROM flatpak_apps WHERE app_id = ?", (app_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT pname FROM nix_packages WHERE attr = ?", (app_id,)).fetchone()
+    conn.close()
+    print(row[0] if row else '')
+except Exception:
+    print('')
+PYEOF
+    }
+
+    # Force-flatpak: exact ID lookup first, then FTS search
     if $force_flatpak; then
+        # Try treating query as an exact Flatpak app ID
+        local exact_name
+        exact_name=$(_lookup_name "$query" "flatpak")
+        if [ -n "$exact_name" ]; then
+            local name="${override_name:-$exact_name}"
+            local out_file
+            out_file=$(module_file "$query")
+            [ -f "$out_file" ] && die "App '${query}' is already installed (${out_file})."
+            write_flatpak_module "$query" "$name" "$out_file"
+            log "install: Flatpak '${name}' (${query}) [direct]"
+            echo "Installed Flatpak: ${name} (${query})"
+            trigger_switch "mirror-os: install ${name} (${query}) [Flatpak]"
+            return
+        fi
+        # Fallback: FTS search
         local flat_raw
         flat_raw=$(flatpak_search "$query")
         [ -z "$flat_raw" ] && die "No Flatpak found for: $query"
@@ -536,6 +574,7 @@ cmd_install() {
         fi
         local src id name
         IFS=: read -r src id name <<< "$selection"
+        [ -n "$override_name" ] && name="$override_name"
         local out_file
         out_file=$(module_file "$id")
         [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
@@ -546,8 +585,23 @@ cmd_install() {
         return
     fi
 
-    # Force-nix: search only Nix
+    # Force-nix: exact attr lookup first, then FTS search
     if $force_nix; then
+        # Try treating query as an exact Nix attr
+        local exact_name
+        exact_name=$(_lookup_name "$query" "nix")
+        if [ -n "$exact_name" ]; then
+            local name="${override_name:-$exact_name}"
+            local out_file
+            out_file=$(module_file "$query")
+            [ -f "$out_file" ] && die "Package '${query}' is already installed (${out_file})."
+            write_nix_module "$query" "$name" "$out_file"
+            log "install: Nix '${name}' (nixpkgs.${query}) [direct]"
+            echo "Installed Nix package: ${name} (${query})"
+            trigger_switch "mirror-os: install ${name} (nixpkgs.${query}) [Nix]"
+            return
+        fi
+        # Fallback: FTS search
         local nix_raw
         nix_raw=$(nix_search "$query")
         [ -z "$nix_raw" ] && die "No Nix package found for: $query"
@@ -565,6 +619,7 @@ cmd_install() {
         fi
         local src id name
         IFS=: read -r src id name <<< "$selection"
+        [ -n "$override_name" ] && name="$override_name"
         local out_file
         out_file=$(module_file "$id")
         [ -f "$out_file" ] && die "Package '${id}' is already installed (${out_file})."
@@ -1337,8 +1392,9 @@ mirror-os — Mirror OS declarative app manager
 Usage:
   mirror-os install <query>                        Search Flatpak + Nix, auto-select best
   mirror-os install <query> --pick                 Search and pick interactively
-  mirror-os install <query> --flatpak              Force Flatpak install (auto-select)
-  mirror-os install <query> --nix                  Force Nix package install (auto-select)
+  mirror-os install <query> --flatpak              Flatpak only: exact ID if known, else search
+  mirror-os install <query> --nix                  Nix only: exact attr if known, else search
+  mirror-os install <query> --flatpak [--name <n>] Same with display name override
   mirror-os install --flake <url> <name>           Install a pro flake app config
   mirror-os uninstall <query>                      Remove an installed app
   mirror-os search <query> [--json]                Search without installing
@@ -1365,6 +1421,9 @@ Examples:
   mirror-os install spotify --pick
   mirror-os install ripgrep --nix
   mirror-os install --flake github:mirror-os/apps#devtools devtools
+  mirror-os install com.spotify.Client --flatpak
+  mirror-os install com.spotify.Client --flatpak --name "Spotify"
+  mirror-os install spotify --nix
   mirror-os uninstall spotify
   mirror-os info com.spotify.Client
   mirror-os info com.spotify.Client --json
