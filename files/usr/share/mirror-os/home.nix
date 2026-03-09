@@ -96,12 +96,15 @@
   #   Libadwaita apps use the color-scheme portal instead and ignore this).
   # GTK_CSD=0                — tells GTK3 apps to request server-side decorations
   #   from COSMIC rather than drawing their own title bars.
-  home.file.".local/share/flatpak/overrides/global".text = ''
-    [Environment]
-    GTK_THEME=adw-gtk3-dark
-    GTK_CSD=0
-    ICON_THEME=Breeze
-  '';
+  home.file.".local/share/flatpak/overrides/global" = {
+    force = true;
+    text = ''
+      [Environment]
+      GTK_THEME=adw-gtk3-dark
+      GTK_CSD=0
+      ICON_THEME=Breeze
+    '';
+  };
 
   # Workaround: prevent duplicate Flatpak entries in COSMIC launcher.
   # COSMIC scans both ~/.local/share/applications/ (XDG_DATA_HOME) and

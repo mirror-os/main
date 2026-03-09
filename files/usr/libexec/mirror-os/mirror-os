@@ -50,9 +50,14 @@ need_init() {
 }
 
 trigger_switch() {
+    local msg="${1:-mirror-os: apply changes}"
     log "Triggering Home Manager switch"
     echo "Applying changes..."
     git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
+    # Commit staged changes so home-manager switch doesn't warn about a dirty tree
+    if ! git -C "$HM_CONFIG_DIR" diff --cached --quiet 2>/dev/null; then
+        git -C "$HM_CONFIG_DIR" commit -m "$msg" 2>/dev/null || true
+    fi
     systemctl --user start mirror-os-sync.service 2>/dev/null || \
         (cd "$HM_CONFIG_DIR" && home-manager switch --flake ".#$USER")
 }
@@ -185,7 +190,7 @@ auto_select_best() {
     local query="${3:-}"
 
     python3 - "$CATALOG_DB" "$flat_raw" "$nix_raw" "$query" << 'PYEOF'
-import sys, sqlite3, json, re
+import sys, sqlite3, json, re, functools
 
 db_path  = sys.argv[1]
 flat_raw = sys.argv[2].strip()
@@ -208,11 +213,11 @@ def version_key(v):
     """
     Split version string into a comparable tuple.
     Numeric segments sort as integers; string segments sort lexically but
-    rank after all purely-numeric segments. Empty versions sort to bottom.
+    rank after all purely-numeric segments.
     Examples: 1.2.10 > 1.2.9, 2.0 > 1.99, 1.0-beta < 1.0
     """
     if not v:
-        return ((1, ''),)
+        return ()
     parts = re.split(r'[.\-_+]', v)
     result = []
     for p in parts:
@@ -220,7 +225,7 @@ def version_key(v):
             result.append((0, int(p)))
         elif p:
             result.append((1, p))
-    return tuple(result) if result else ((1, ''),)
+    return tuple(result)
 
 def date_key(d):
     """
@@ -269,34 +274,61 @@ for c in candidates:
 if db_available:
     conn.close()
 
-def negate_version_key(vk):
-    """Negate a version_key tuple for descending sort (higher version = lower sort key)."""
-    result = []
-    for seg in vk:
-        if seg[0] == 0:
-            result.append((0, -seg[1]))
-        else:
-            # String segments: make them sort before numeric in descending order
-            result.append((seg[0], seg[1]))
-    return tuple(result)
-
 def name_match(e):
-    """Return -1 if query tokens appear in the app id or name, 0 otherwise.
-    Negative so that name matches sort first in ascending order."""
+    """Return -2 for title match, -1 for id-only match, 0 for no match.
+    Prefers apps whose human-readable name matches the query over apps that
+    only match via their technical ID."""
     if not query:
         return 0
-    id_lower   = e['id'].lower()
     name_lower = e['name'].lower()
+    id_lower   = e['id'].lower()
     tokens     = query.split()
-    return -1 if any(t in id_lower or t in name_lower for t in tokens) else 0
+    if any(t in name_lower for t in tokens):
+        return -2  # title match: highest priority
+    if any(t in id_lower for t in tokens):
+        return -1  # id-only match: lower priority
+    return 0
 
-def sort_key(e):
-    nm = name_match(e)   # -1 = name match (sorts first), 0 = no match
-    vk = negate_version_key(version_key(e['version']))
-    dk = date_key(e['release_date'])
-    return (nm, vk, dk)
+def compare(a, b):
+    """
+    Compare two candidates. Returns negative if a should sort before b (i.e. a is preferred).
 
-enriched.sort(key=sort_key)
+    Priority order:
+      1. Title match quality (-2 > -1 > 0)
+      2. Version comparison — only when BOTH have version data (higher version wins)
+      3. Source preference — Flatpak over Nix (handles missing-version cases gracefully)
+      4. Release date — older = more established (ascending)
+    """
+    # 1. Name/title match quality
+    nm_a = name_match(a)
+    nm_b = name_match(b)
+    if nm_a != nm_b:
+        return nm_a - nm_b
+
+    # 2. Version comparison (only when both sides have version data)
+    vk_a = version_key(a['version'])
+    vk_b = version_key(b['version'])
+    if vk_a and vk_b and vk_a != vk_b:
+        return -1 if vk_a > vk_b else 1  # higher version sorts first
+
+    # 3. Source preference: Flatpak > Nix
+    #    This handles the common case where Flatpak lacks AppStream release info
+    #    (empty version) but is still the better/more up-to-date choice for GUI apps.
+    src_a = 0 if a['source'] == 'flatpak' else 1
+    src_b = 0 if b['source'] == 'flatpak' else 1
+    if src_a != src_b:
+        return src_a - src_b
+
+    # 4. Release date: older = more established (ascending)
+    dk_a = date_key(a['release_date'])
+    dk_b = date_key(b['release_date'])
+    if dk_a < dk_b:
+        return -1
+    if dk_a > dk_b:
+        return 1
+    return 0
+
+enriched.sort(key=functools.cmp_to_key(compare))
 best = enriched[0]
 
 print(f"{best['source']}:{best['id']}:{best['name']}")
@@ -452,7 +484,7 @@ cmd_install() {
         write_pro_flake_module "$input_name" "$safe_name" "$out_file"
         log "install: pro flake '${safe_name}' from ${flake_url}"
         echo "Installed pro flake: ${safe_name}"
-        trigger_switch
+        trigger_switch "mirror-os: install flake ${safe_name}"
         return
     fi
 
@@ -483,7 +515,7 @@ cmd_install() {
         write_flatpak_module "$id" "$name" "$out_file"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
-        trigger_switch
+        trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
         return
     fi
 
@@ -512,7 +544,7 @@ cmd_install() {
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
-        trigger_switch
+        trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
         return
     fi
 
@@ -547,12 +579,13 @@ cmd_install() {
         write_flatpak_module "$id" "$name" "$out_file"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
+        trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
     else
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
+        trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
     fi
-    trigger_switch
 }
 
 # Print auto-selection summary line: "Auto-selected: Name (id) [Source, vX.Y, date]"
@@ -575,28 +608,34 @@ _print_auto_selection() {
 
 cmd_uninstall() {
     need_init
-    local id="${1:-}"
-    [ -z "$id" ] && die "Usage: mirror-os uninstall <app-id>"
+    local query="${1:-}"
+    [ -z "$query" ] && die "Usage: mirror-os uninstall <query>"
 
     local out_file
-    out_file=$(module_file "$id")
+    out_file=$(module_file "$query")
 
     if [ ! -f "$out_file" ]; then
-        local matches
-        matches=$(find "$APPS_DIR" -name "*${id}*" -name "*.nix" 2>/dev/null)
-        if [ -z "$matches" ]; then
-            die "App '${id}' not found in $APPS_DIR. Use 'mirror-os list' to see installed apps."
+        # Search by case-insensitive filename substring and by app title in module comment
+        local file_matches title_matches all_matches
+        file_matches=$(find "$APPS_DIR" -maxdepth 1 -iname "*${query}*" -name "*.nix" 2>/dev/null)
+        title_matches=$(grep -ril "^# .*${query}.*— installed via mirror-os" "$APPS_DIR" 2>/dev/null || true)
+        all_matches=$(printf '%s\n%s\n' "$file_matches" "$title_matches" \
+            | grep '\.nix$' | sort -u)
+        if [ -z "$all_matches" ]; then
+            die "No installed app matching '${query}'. Use 'mirror-os list' to see installed apps."
         fi
         local count
-        count=$(echo "$matches" | wc -l)
+        count=$(echo "$all_matches" | wc -l)
         if [ "$count" -gt 1 ]; then
-            echo "Multiple matches found:"
-            echo "$matches" | while read -r f; do echo "  $(basename "$f" .nix)"; done
-            die "Please specify the exact app ID."
+            echo "Multiple matches for '${query}':"
+            echo "$all_matches" | while read -r f; do echo "  $(basename "$f" .nix)"; done
+            die "Please be more specific."
         fi
-        out_file="$matches"
-        id=$(basename "$out_file" .nix)
+        out_file="$all_matches"
     fi
+
+    local id
+    id=$(basename "$out_file" .nix)
 
     printf "Remove '%s'? [y/N] " "$id"
     read -r confirm
@@ -612,7 +651,7 @@ cmd_uninstall() {
     rm "$out_file"
     log "uninstall: '${id}'"
     echo "Uninstalled: ${id}"
-    trigger_switch
+    trigger_switch "mirror-os: uninstall ${id}"
 }
 
 cmd_search() {
@@ -1066,7 +1105,7 @@ cmd_update() {
     echo "Updating flake inputs..."
     (cd "$HM_CONFIG_DIR" && nix flake update) || die "nix flake update failed"
     log "update: flake update complete"
-    trigger_switch
+    trigger_switch "mirror-os: flake update"
 }
 
 cmd_catalog() {
@@ -1243,7 +1282,7 @@ cmd_add_option() {
     sed -i "$(grep -n '^}' "$out_file" | tail -1 | cut -d: -f1)i\\  ${key} = ${value};" "$out_file"
     log "add-option: '${app_id}' ${key} = ${value}"
     echo "Added option '${key} = ${value}' to ${app_id}."
-    trigger_switch
+    trigger_switch "mirror-os: configure ${app_id} (add ${key})"
 }
 
 cmd_remove_option() {
@@ -1263,7 +1302,7 @@ cmd_remove_option() {
     sed -i "/^  ${key} = /d" "$out_file"
     log "remove-option: '${app_id}' ${key}"
     echo "Removed option '${key}' from ${app_id}."
-    trigger_switch
+    trigger_switch "mirror-os: configure ${app_id} (remove ${key})"
 }
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
@@ -1278,7 +1317,7 @@ Usage:
   mirror-os install <query> --flatpak              Force Flatpak install (auto-select)
   mirror-os install <query> --nix                  Force Nix package install (auto-select)
   mirror-os install --flake <url> <name>           Install a pro flake app config
-  mirror-os uninstall <id>                         Remove an installed app
+  mirror-os uninstall <query>                      Remove an installed app
   mirror-os search <query> [--json]                Search without installing
   mirror-os browse [--source flatpak|nix|all]      Browse all apps
              [--category <cat>] [--limit N] [--json]
@@ -1303,7 +1342,7 @@ Examples:
   mirror-os install spotify --pick
   mirror-os install ripgrep --nix
   mirror-os install --flake github:mirror-os/apps#devtools devtools
-  mirror-os uninstall com.spotify.Client
+  mirror-os uninstall spotify
   mirror-os info com.spotify.Client
   mirror-os info com.spotify.Client --json
   mirror-os list --json
@@ -1359,7 +1398,7 @@ case "${1:-}" in
                 f=$(module_file "$app_id")
                 [ -f "$f" ] || die "App '${app_id}' not found. Use 'mirror-os list'."
                 ${EDITOR:-nano} "$f"
-                trigger_switch ;;
+                trigger_switch "mirror-os: edit ${app_id}" ;;
             *) die "Unknown option for --app: ${1:-}. Options: --add-option, --remove-option, --show-config, --edit" ;;
         esac
         ;;
