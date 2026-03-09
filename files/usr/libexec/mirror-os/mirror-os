@@ -431,9 +431,12 @@ write_flatpak_module() {
 # ${app_name} — installed via mirror-os
 # To remove: mirror-os uninstall ${app_id}
 { ... }: {
-  services.flatpak.packages = [
-    { appId = "${app_id}"; origin = "flathub"; }
-  ];
+  services.flatpak = {
+    enable = true;
+    packages = [
+      { appId = "${app_id}"; origin = "flathub"; }
+    ];
+  };
 }
 EOF
 }

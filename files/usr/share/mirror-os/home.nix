@@ -87,10 +87,8 @@
   '';
 
   # Flatpak — global overrides for theming and window decorations.
-  # Written declaratively as a file to avoid nix-flatpak's managed-install service,
-  # which sends noisy "Installing 0 Flatpaks" notifications on every activation.
-  # To manage Flatpak packages declaratively, add services.flatpak in home-user.nix
-  # or install apps via mirror-os install / the Software Center.
+  # Each per-app module in apps/ sets services.flatpak.enable = true so
+  # nix-flatpak is only activated when at least one Flatpak app is installed.
   #
   # GTK_THEME=adw-gtk3-dark  — forces dark mode for GTK3 Flatpak apps (GTK4/
   #   Libadwaita apps use the color-scheme portal instead and ignore this).
