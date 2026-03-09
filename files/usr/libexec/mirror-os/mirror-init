@@ -163,7 +163,21 @@ if [ ! -d "$STATE_DIR/.git" ]; then
     git -C "$STATE_DIR" config user.email "$USER@mirror-os.local"
 fi
 
-# ── Step 9: First home-manager switch ──────────────────────────────────────
+# ── Step 9: Set up user-scope Flatpak remote ───────────────────────────────
+# nix-flatpak installs user-selected apps at user scope (flatpak --user).
+# The system-scope flathub remote (used by managed-apps.list) is a separate
+# Flatpak installation and is not available to user-scope installs.
+# We must add the remote here, before the first home-manager switch, so
+# nix-flatpak can find it during activation.
+log "Configuring user-scope Flatpak remote..."
+if flatpak remote-add --user --if-not-exists flathub \
+        https://dl.flathub.org/repo/flathub.flatpakrepo >> "$LOG" 2>&1; then
+    log "User-scope flathub remote configured"
+else
+    log "WARNING: Could not add user-scope flathub remote — user Flatpak installs may fail"
+fi
+
+# ── Step 10: First home-manager switch ─────────────────────────────────────
 # nix-flatpak applies global Flatpak overrides (GTK/icon theme) as part of
 # this switch. Default apps are managed by mirror-os-flatpak-init.service, not nix-flatpak.
 log "Running home-manager switch (first run may take a while)..."
@@ -178,7 +192,7 @@ else
     log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
 fi
 
-# ── Step 10: Initial state git commit ─────────────────────────────────────
+# ── Step 11: Initial state git commit ─────────────────────────────────────
 mkdir -p "$STATE_DIR/home-manager"
 cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
 flatpak list --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"

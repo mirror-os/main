@@ -52,14 +52,20 @@ need_init() {
 trigger_switch() {
     local msg="${1:-mirror-os: apply changes}"
     log "Triggering Home Manager switch"
-    echo "Applying changes..."
     git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
     # Commit staged changes so home-manager switch doesn't warn about a dirty tree
     if ! git -C "$HM_CONFIG_DIR" diff --cached --quiet 2>/dev/null; then
         git -C "$HM_CONFIG_DIR" commit -m "$msg" 2>/dev/null || true
     fi
-    systemctl --user start mirror-os-sync.service 2>/dev/null || \
-        (cd "$HM_CONFIG_DIR" && home-manager switch --flake ".#$USER")
+    echo "Applying changes (this may take a minute)..."
+    cd "$HM_CONFIG_DIR"
+    if home-manager switch --flake ".#$USER"; then
+        echo "Done."
+        log "home-manager switch succeeded"
+    else
+        log "WARNING: home-manager switch failed"
+        die "home-manager switch failed — check ~/.local/share/mirror-os/mirror-os.log"
+    fi
 }
 
 # ── Catalog DB helpers ────────────────────────────────────────────────────────
