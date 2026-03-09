@@ -427,11 +427,20 @@ except Exception as e:
     print(f"mirror-catalog-update: failed to parse nix search JSON: {e}", file=sys.stderr)
     sys.exit(1)
 
+# When multiple nix paths share the same last component (e.g. both
+# legacyPackages.x86_64-linux.spotify and
+# legacyPackages.x86_64-linux.homeassistantCustomComponents.spotify),
+# keep only the shallowest one (fewest dots = top-level package).
+best = {}  # attr -> (depth, val)
+for key, val in data.items():
+    attr  = key.split('.')[-1] if '.' in key else key
+    depth = key.count('.')
+    if attr not in best or depth < best[attr][0]:
+        best[attr] = (depth, val)
+
 rows     = []
 fts_rows = []
-for key, val in data.items():
-    # key: "legacyPackages.x86_64-linux.attr" or "packages.x86_64-linux.attr"
-    attr  = key.split('.')[-1] if '.' in key else key
+for attr, (_, val) in best.items():
     pname = val.get('pname', attr)
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
