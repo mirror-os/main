@@ -280,18 +280,35 @@ if db_available:
     conn.close()
 
 def name_match(e):
-    """Return -2 for title match, -1 for id-only match, 0 for no match.
-    Prefers apps whose human-readable name matches the query over apps that
-    only match via their technical ID."""
+    """
+    Score how well the query matches this candidate's name/id. Lower = better.
+
+    -3  exact name match  — name == query (e.g. "Spotify" for query "spotify")
+    -2  full title match  — all query tokens appear in name (e.g. "Visual Studio Code"
+                            for query "visual studio code"); also catches single-token
+                            queries where the token is in the name
+    -1  id or partial     — query token found only in the technical app ID, or name
+                            contains a token only as a substring inside a longer word
+     0  no match
+    """
     if not query:
         return 0
     name_lower = e['name'].lower()
     id_lower   = e['id'].lower()
     tokens     = query.split()
-    if any(t in name_lower for t in tokens):
-        return -2  # title match: highest priority
-    if any(t in id_lower for t in tokens):
-        return -1  # id-only match: lower priority
+
+    # Exact name match: name equals query after normalisation
+    if name_lower == query:
+        return -3
+
+    # Full title match: every query token appears somewhere in the name
+    if all(t in name_lower for t in tokens):
+        return -2
+
+    # Partial or id-only match
+    if any(t in name_lower or t in id_lower for t in tokens):
+        return -1
+
     return 0
 
 def compare(a, b):
@@ -299,7 +316,7 @@ def compare(a, b):
     Compare two candidates. Returns negative if a should sort before b (i.e. a is preferred).
 
     Priority order:
-      1. Title match quality (-2 > -1 > 0)
+      1. Title match quality (-3 exact > -2 full > -1 partial/id > 0 none)
       2. Flathub verified badge — verified Flatpak wins over unverified regardless of version
       3. Version comparison — only when BOTH have version data (higher version wins)
       4. Source preference — Flatpak over Nix (handles missing-version cases gracefully)
@@ -677,12 +694,8 @@ cmd_search() {
     $json || echo "Searching for '$query'..."
 
     local flat_raw nix_raw
-    flat_raw=$(flatpak_search "$query") &
-    local flat_pid=$!
-    nix_raw=$(nix_search "$query") &
-    local nix_pid=$!
-    wait $flat_pid || flat_raw=""
-    wait $nix_pid  || nix_raw=""
+    flat_raw=$(flatpak_search "$query")
+    nix_raw=$(nix_search "$query")
 
     if $json; then
         _search_json "$flat_raw" "$nix_raw"
