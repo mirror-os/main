@@ -578,8 +578,7 @@ PYEOF
     case "${choice,,}" in
         ""|y|yes) return 0 ;;
         s|search)
-            echo "Opening interactive search..."
-            cmd_install "$orig_query" --pick
+            cmd_search "$orig_query"
             return 1 ;;
         *) echo "Cancelled."; return 1 ;;
     esac
@@ -957,7 +956,17 @@ cmd_search() {
         found=true
     fi
 
-    $found || echo "No results found for: $query"
+    if ! $found; then
+        echo "No results found for: $query"
+        return
+    fi
+
+    echo ""
+    printf "Enter an app ID to install, or press Enter to exit: "
+    local pick
+    read -r pick
+    [ -z "$pick" ] && return
+    cmd_install "$pick"
 }
 
 # Build rich JSON output for search/browse commands
