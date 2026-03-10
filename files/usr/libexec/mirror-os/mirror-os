@@ -59,15 +59,15 @@ trigger_switch() {
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
-    if home-manager switch --flake ".#$USER" --impure >> "$LOG" 2>&1; then
+    if home-manager switch --flake ".#$USER" --impure >> "$LOG_FILE" 2>&1; then
         echo "Done."
         log "home-manager switch succeeded"
     else
         log "WARNING: home-manager switch failed"
         local last_err
-        last_err=$(grep "error:" "$LOG" | tail -1 2>/dev/null || true)
+        last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
         [ -n "$last_err" ] && echo "$last_err" >&2
-        die "home-manager switch failed — check $LOG"
+        die "home-manager switch failed — check $LOG_FILE"
     fi
 }
 
@@ -617,7 +617,7 @@ cmd_install() {
 
         inject_flake_input "$input_name" "$flake_url"
         echo "Locking flake inputs..."
-        (cd "$HM_CONFIG_DIR" && nix flake lock >> "$LOG" 2>&1) || die "nix flake lock failed"
+        (cd "$HM_CONFIG_DIR" && nix flake lock >> "$LOG_FILE" 2>&1) || die "nix flake lock failed"
         write_pro_flake_module "$input_name" "$safe_name" "$out_file"
         log "install: pro flake '${safe_name}' from ${flake_url}"
         echo "Installed pro flake: ${safe_name}"
@@ -910,7 +910,7 @@ cmd_uninstall() {
     else
         # Expire old Home Manager generations and collect freed Nix store paths.
         echo "Running Nix garbage collection (this may take a moment)..."
-        nix-collect-garbage -d >> "$LOG" 2>&1 || true
+        nix-collect-garbage -d >> "$LOG_FILE" 2>&1 || true
     fi
 }
 
