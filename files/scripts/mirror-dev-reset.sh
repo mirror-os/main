@@ -170,7 +170,7 @@ if $DO_HM; then
     rm -f "$REAL_HOME/.nix-profile"
 
     cd "$HM_DEST"
-    nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" || \
+    nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" --impure || \
         echo "  → home-manager switch completed with warnings (check output above)."
 
     # Update the image hash so mirror-sync doesn't immediately redo the

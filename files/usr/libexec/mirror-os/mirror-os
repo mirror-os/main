@@ -59,7 +59,7 @@ trigger_switch() {
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
-    if home-manager switch --flake ".#$USER"; then
+    if home-manager switch --flake ".#$USER" --impure; then
         echo "Done."
         log "home-manager switch succeeded"
     else

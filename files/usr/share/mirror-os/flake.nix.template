@@ -22,7 +22,7 @@
         extraSpecialArgs = { inherit inputs username; };
         modules = [
           nix-flatpak.homeManagerModules.nix-flatpak
-          /usr/share/mirror-os/home.nix           # system-managed, read-only
+          /usr/share/mirror-os/home.nix           # system-managed, read-only; requires --impure
           ./home-user.nix                          # your overrides + apps/
         ];
       };

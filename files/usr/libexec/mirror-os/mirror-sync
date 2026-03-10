@@ -122,7 +122,7 @@ if [ "$CHANGED" = true ] && [ -d "$HM_CONFIG_DIR" ]; then
 
     log "Running home-manager switch (image update)..."
     cd "$HM_CONFIG_DIR"
-    if home-manager switch --flake ".#$USER" >> "$LOG" 2>&1; then
+    if home-manager switch --flake ".#$USER" --impure >> "$LOG" 2>&1; then
         log "home-manager switch succeeded"
     else
         log "WARNING: home-manager switch failed"
