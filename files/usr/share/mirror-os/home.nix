@@ -10,6 +10,9 @@
   home.homeDirectory = "/var/home/${username}";
   home.stateVersion = "24.11";
 
+  # Allow unfree packages (e.g. davinci-resolve, obsidian, steam).
+  nixpkgs.config.allowUnfree = true;
+
   programs.home-manager.enable = true;
 
   # Git identity — set once at first login, matches the identity mirror-init
@@ -41,7 +44,7 @@
     enable = true;
     # Adopt XDG config directory now to avoid a breaking default change in a
     # future Home Manager release.  Zsh files will live in ~/.config/zsh/.
-    dotDir = ".config/zsh";
+    dotDir = "${config.xdg.configHome}/zsh";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     oh-my-zsh = {
