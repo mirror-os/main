@@ -739,10 +739,30 @@ cmd_uninstall() {
         echo "Removed flake input: ${input_name}"
     fi
 
+    # Detect type and app ID before deleting the module file.
+    local is_flatpak=false flatpak_app_id=""
+    if grep -q "services\.flatpak" "$out_file" 2>/dev/null; then
+        is_flatpak=true
+        flatpak_app_id=$(grep 'appId\s*=' "$out_file" \
+            | sed 's/.*appId\s*=\s*"\([^"]*\)".*/\1/' | head -1)
+    fi
+
     rm "$out_file"
     log "uninstall: '${id}'"
     echo "Uninstalled: ${id}"
     trigger_switch "mirror-os: uninstall ${id}"
+
+    # Post-switch cleanup: ensure the app is actually gone.
+    if $is_flatpak && [ -n "$flatpak_app_id" ]; then
+        # nix-flatpak's activation runs a background service; call flatpak directly
+        # so the app disappears from the launcher before this command returns.
+        echo "Removing Flatpak installation..."
+        flatpak --user uninstall --noninteractive "$flatpak_app_id" 2>/dev/null || true
+    else
+        # Expire old Home Manager generations and collect freed Nix store paths.
+        echo "Running Nix garbage collection (this may take a moment)..."
+        nix-collect-garbage -d >> "$LOG" 2>&1 || true
+    fi
 }
 
 cmd_search() {
@@ -1016,8 +1036,10 @@ if os.path.isdir(apps_dir):
         except Exception:
             content = ""
         source = "unknown"
-        if "services.flatpak.packages" in content:
-            source = "flatpak"
+        if "services.flatpak" in content:
+            import re as _re
+            m = _re.search(r'origin\s*=\s*"([^"]+)"', content)
+            source = m.group(1) if m else "flatpak"
         elif "home.packages" in content:
             source = "nix"
         elif "homeManagerModules" in content:
@@ -1043,8 +1065,14 @@ PYEOF
         local id
         id=$(basename "$f" .nix)
         local src="unknown"
-        grep -q "services.flatpak.packages" "$f" 2>/dev/null && src="Flatpak"
-        grep -q "home.packages" "$f" 2>/dev/null && src="Nix"
+        if grep -q "services\.flatpak" "$f" 2>/dev/null; then
+            local _origin
+            _origin=$(grep -o 'origin\s*=\s*"[^"]*"' "$f" 2>/dev/null \
+                      | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
+            src="${_origin^}"
+            [ -z "$src" ] && src="Flatpak"
+        fi
+        grep -q "home\.packages" "$f" 2>/dev/null && src="Nix"
         grep -q "homeManagerModules" "$f" 2>/dev/null && src="Pro flake"
         printf "  %-45s  %s\n" "$id" "$src"
     done <<< "$files"
@@ -1079,8 +1107,14 @@ cmd_info() {
     fi
 
     local src="unknown"
-    grep -q "services.flatpak.packages" "$out_file" 2>/dev/null && src="Flatpak"
-    grep -q "home.packages" "$out_file" 2>/dev/null && src="Nix"
+    if grep -q "services\.flatpak" "$out_file" 2>/dev/null; then
+        local _origin
+        _origin=$(grep -o 'origin\s*=\s*"[^"]*"' "$out_file" 2>/dev/null \
+                  | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
+        src="${_origin^}"
+        [ -z "$src" ] && src="Flatpak"
+    fi
+    grep -q "home\.packages" "$out_file" 2>/dev/null && src="Nix"
     grep -q "homeManagerModules" "$out_file" 2>/dev/null && src="Pro flake"
 
     if $json; then
@@ -1110,7 +1144,7 @@ if os.path.exists(db_path):
         conn.execute("PRAGMA query_only = ON")
         conn.row_factory = sqlite3.Row
 
-        if src == 'Flatpak':
+        if src not in ('Nix', 'Pro flake', 'unknown'):
             row = conn.execute(
                 """SELECT name, summary, description, version, release_date, developer,
                           license, homepage, bugtracker_url, donation_url,
@@ -1175,7 +1209,7 @@ PYEOF
     echo "--- Module ---"
     cat "$out_file"
 
-    if [ "$src" = "Flatpak" ]; then
+    if [ "$src" != "Nix" ] && [ "$src" != "Pro flake" ] && [ "$src" != "unknown" ]; then
         echo ""
         echo "--- Flatpak info ---"
         flatpak info --user "$id" 2>/dev/null || flatpak info "$id" 2>/dev/null || \
