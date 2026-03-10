@@ -45,6 +45,9 @@
     # Adopt XDG config directory now to avoid a breaking default change in a
     # future Home Manager release.  Zsh files will live in ~/.config/zsh/.
     dotDir = "${config.xdg.configHome}/zsh";
+    # home-manager always needs --impure because flake.nix references an
+    # absolute path (/usr/share/mirror-os/home.nix) outside the flake dir.
+    shellAliases.home-manager = "home-manager --impure";
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     oh-my-zsh = {
