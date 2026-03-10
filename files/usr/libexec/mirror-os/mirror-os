@@ -558,7 +558,11 @@ PYEOF
             local name="${override_name:-$exact_name}"
             local out_file
             out_file=$(module_file "$query")
-            [ -f "$out_file" ] && die "App '${query}' is already installed (${out_file})."
+            if [ -f "$out_file" ]; then
+                echo "Already tracked — re-applying to complete interrupted install..."
+                trigger_switch "mirror-os: re-apply ${query}"
+                return
+            fi
             write_flatpak_module "$query" "$name" "$out_file"
             log "install: Flatpak '${name}' (${query}) [direct]"
             echo "Installed Flatpak: ${name} (${query})"
@@ -586,7 +590,11 @@ PYEOF
         [ -n "$override_name" ] && name="$override_name"
         local out_file
         out_file=$(module_file "$id")
-        [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
+        if [ -f "$out_file" ]; then
+            echo "Already tracked — re-applying to complete interrupted install..."
+            trigger_switch "mirror-os: re-apply ${id}"
+            return
+        fi
         write_flatpak_module "$id" "$name" "$out_file"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
@@ -603,7 +611,11 @@ PYEOF
             local name="${override_name:-$exact_name}"
             local out_file
             out_file=$(module_file "$query")
-            [ -f "$out_file" ] && die "Package '${query}' is already installed (${out_file})."
+            if [ -f "$out_file" ]; then
+                echo "Already tracked — re-applying to complete interrupted install..."
+                trigger_switch "mirror-os: re-apply ${query}"
+                return
+            fi
             write_nix_module "$query" "$name" "$out_file"
             log "install: Nix '${name}' (nixpkgs.${query}) [direct]"
             echo "Installed Nix package: ${name} (${query})"
@@ -631,7 +643,11 @@ PYEOF
         [ -n "$override_name" ] && name="$override_name"
         local out_file
         out_file=$(module_file "$id")
-        [ -f "$out_file" ] && die "Package '${id}' is already installed (${out_file})."
+        if [ -f "$out_file" ]; then
+            echo "Already tracked — re-applying to complete interrupted install..."
+            trigger_switch "mirror-os: re-apply ${id}"
+            return
+        fi
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
@@ -664,7 +680,11 @@ PYEOF
     IFS=: read -r src id name <<< "$selection"
     local out_file
     out_file=$(module_file "$id")
-    [ -f "$out_file" ] && die "App '${id}' is already installed (${out_file})."
+    if [ -f "$out_file" ]; then
+        echo "Already tracked — re-applying to complete interrupted install..."
+        trigger_switch "mirror-os: re-apply ${id}"
+        return
+    fi
 
     if [ "$src" = "flatpak" ]; then
         write_flatpak_module "$id" "$name" "$out_file"
@@ -713,7 +733,28 @@ cmd_uninstall() {
         all_matches=$(printf '%s\n%s\n' "$file_matches" "$title_matches" \
             | grep '\.nix$' | sort -u)
         if [ -z "$all_matches" ]; then
-            die "No installed app matching '${query}'. Use 'mirror-os list' to see installed apps."
+            # No module file — check for an orphaned user-scope Flatpak installation
+            # (e.g. app still in launcher after an interrupted uninstall).
+            local orphan_id=""
+            # Exact app ID match
+            if flatpak info --user "$query" &>/dev/null 2>&1; then
+                orphan_id="$query"
+            fi
+            # Name/ID substring match in user flatpak list
+            if [ -z "$orphan_id" ]; then
+                orphan_id=$(flatpak list --user --columns=application,name 2>/dev/null \
+                    | grep -i "$query" | cut -f1 | head -1)
+            fi
+            if [ -n "$orphan_id" ]; then
+                printf "No mirror-os module found, but '%s' is installed as a user Flatpak.\nRemove it? [y/N] " "$orphan_id"
+                read -r confirm
+                [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+                flatpak --user uninstall --noninteractive "$orphan_id" && \
+                    log "uninstall: orphaned Flatpak '${orphan_id}'" || \
+                    echo "Warning: flatpak uninstall failed — try: flatpak --user uninstall ${orphan_id}"
+                return
+            fi
+            die "No installed app matching '${query}'. Use 'mirror-os list' to see managed apps."
         fi
         local count
         count=$(echo "$all_matches" | wc -l)
