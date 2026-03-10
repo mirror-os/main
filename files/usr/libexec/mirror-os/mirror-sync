@@ -44,30 +44,80 @@ log "=== Mirror OS Sync starting ==="
 CURRENT_APPS=$(flatpak list --app --columns=application 2>/dev/null | sort)
 CHANGED=false
 
-# ── Detect image update (system home.nix changed) ───────────────────────────
-# home.nix lives read-only in the OS image at
-# /usr/share/mirror-os/.  When a new image is rebased those files may change;
-# hash them to detect the update and trigger a home-manager switch.
+# ── Detect image update ──────────────────────────────────────────────────────
+# Hash all image-managed mirror-os files.  When a new image is booted these
+# may change; any change triggers a flake.nix refresh + home-manager switch.
 SYSTEM_HM_HASH_FILE="$STATE_DIR/system-hm.hash"
-SYSTEM_HM_HASH=$(sha256sum /usr/share/mirror-os/home.nix \
-    | sha256sum | cut -d' ' -f1 || echo "")
+SYSTEM_HM_HASH=$(sha256sum \
+    /usr/share/mirror-os/home.nix \
+    /usr/share/mirror-os/flake.nix.template \
+    /usr/share/mirror-os/home-user.nix.template \
+    2>/dev/null | sha256sum | cut -d' ' -f1 || echo "")
 if [ -n "$SYSTEM_HM_HASH" ]; then
     if [ ! -f "$SYSTEM_HM_HASH_FILE" ] || \
        [ "$SYSTEM_HM_HASH" != "$(cat "$SYSTEM_HM_HASH_FILE")" ]; then
-        log "System home.nix changed (image updated) — scheduling home-manager switch"
+        log "Image mirror-os files changed (image updated) — refreshing HM config"
         echo "$SYSTEM_HM_HASH" > "$SYSTEM_HM_HASH_FILE"
         CHANGED=true
     fi
 fi
 
-# ── home-manager switch (image updates only) ────────────────────────────────
-# Only triggered when the system home.nix hash changed (image update above).
-# User-initiated installs/uninstalls run home-manager switch directly via
-# mirror-os, so no user .nix hash detection is needed here.
+# ── Refresh HM infrastructure from image templates (image updates only) ──────
+# When the image updates, rewrite flake.nix from the current template so the
+# user's config always tracks the image's module list and input versions.
+# home-user.nix is NEVER overwritten — it belongs to the user.
+# Pro flake inputs added by mirror-os are extracted from the old flake and
+# re-injected into the refreshed one so they survive the update.
 if [ "$CHANGED" = true ] && [ -d "$HM_CONFIG_DIR" ]; then
-    # Stage all HM config files before the switch so Nix flake evaluation can
-    # see any new or modified files.  Nix only reads files git knows about
-    # (committed or staged); unstaged writes are invisible.
+    FLAKE_TEMPLATE="/usr/share/mirror-os/flake.nix.template"
+    FLAKE_NIX="$HM_CONFIG_DIR/flake.nix"
+    MARKER="# Pro flake inputs are added here by mirror-os tool"
+
+    if [ -f "$FLAKE_TEMPLATE" ]; then
+        log "Refreshing flake.nix from image template..."
+
+        # Extract any pro flake inputs that mirror-os injected after the marker
+        PRO_INPUTS=""
+        if [ -f "$FLAKE_NIX" ] && grep -q "$MARKER" "$FLAKE_NIX"; then
+            PRO_INPUTS=$(awk \
+                "/$MARKER/{found=1; next} found && /^  \};/{exit} found{print}" \
+                "$FLAKE_NIX" 2>/dev/null || true)
+        fi
+
+        # Re-scaffold from template
+        sed "s/__USERNAME__/$USER/g" "$FLAKE_TEMPLATE" > "$FLAKE_NIX"
+
+        # Re-inject any pro flake inputs
+        if [ -n "$PRO_INPUTS" ]; then
+            # Escape for sed replacement
+            escaped=$(printf '%s\n' "$PRO_INPUTS" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            sed -i "s|${MARKER}|${MARKER}\n${escaped}|" "$FLAKE_NIX"
+            log "Re-injected pro flake inputs into refreshed flake.nix"
+        fi
+
+        log "flake.nix refreshed from image template"
+    fi
+
+    # Ensure home-user.nix exists (may be absent on very old setups)
+    if [ ! -f "$HM_CONFIG_DIR/home-user.nix" ]; then
+        USERTEMPLATE="/usr/share/mirror-os/home-user.nix.template"
+        if [ -f "$USERTEMPLATE" ]; then
+            sed "s/__USERNAME__/$USER/g" "$USERTEMPLATE" \
+                > "$HM_CONFIG_DIR/home-user.nix"
+            log "home-user.nix created from template (was missing)"
+        fi
+    fi
+
+    # Ensure apps/ exists
+    mkdir -p "$HM_CONFIG_DIR/apps"
+
+    # Reconcile the flake lock: pins new inputs, removes stale ones (e.g.
+    # cosmic-manager if removed from template), keeps unchanged inputs pinned.
+    log "Reconciling flake.lock..."
+    (cd "$HM_CONFIG_DIR" && nix flake lock >> "$LOG" 2>&1) || \
+        log "WARNING: nix flake lock failed — switch may fail"
+
+    # Stage everything (refreshed flake.nix, new flake.lock, any new files)
     git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
 
     log "Running home-manager switch (image update)..."
