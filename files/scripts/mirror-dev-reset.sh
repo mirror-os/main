@@ -12,7 +12,7 @@ usage() {
     echo "Options:"
     echo "  --nix       Wipe Nix user profile, GC the store, and re-scaffold HM config from templates"
     echo "  --hm        Reset Home Manager config and rebuild Nix environment"
-    echo "  --flatpaks  Remove all Flatpaks; default apps reinstall on next boot via mirror-os-flatpak-init.service"
+    echo "  --flatpaks  Remove all Flatpaks; restarts mirror-os-flatpak-init.service to reinstall default apps immediately"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
     echo "  --full      All of the above (virgin system)"
@@ -103,9 +103,11 @@ if $DO_NIX; then
     # next switch picks up any template changes made during development.
     echo "  → Re-scaffolding home-manager config from templates..."
     rm -rf "$HM_DEST"
-    mkdir -p "$HM_DEST"
+    mkdir -p "$HM_DEST/apps"
 
-    for template in flake.nix home.nix home-user.nix; do
+    # home.nix lives read-only in the image at /usr/share/mirror-os/home.nix
+    # and is imported directly by flake.nix — it is NOT a user scaffold.
+    for template in flake.nix home-user.nix; do
         sed "s/__USERNAME__/$REAL_USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_DEST/$template"
@@ -117,37 +119,69 @@ if $DO_NIX; then
     git -C "$HM_DEST" add .
     git -C "$HM_DEST" commit -m "initial" -q
 
+    # Update the image hash so mirror-sync doesn't immediately redo the
+    # image-update refresh on top of the freshly scaffolded config.
+    _new_hash=$(sha256sum \
+        /usr/share/mirror-os/home.nix \
+        /usr/share/mirror-os/flake.nix.template \
+        /usr/share/mirror-os/home-user.nix.template \
+        2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+    [ -n "$_new_hash" ] && \
+        echo "$_new_hash" > "$REAL_HOME/.local/share/mirror-os/state/system-hm.hash"
+
     echo "  → Home Manager config re-scaffolded. Run --hm or 'home-manager switch' to apply."
 fi
 
 # ── Home Manager reset ────────────────────────────────────────────────────────
 if $DO_HM; then
     echo "→ Resetting Home Manager config..."
-    rm -rf "$HM_DEST"
-    mkdir -p "$HM_DEST"
+    echo "  Note: apps/ will be wiped — re-run 'mirror-os install' for each app afterwards."
 
-    for template in flake.nix home.nix home-user.nix; do
+    # Expire old HM generations before wiping the config dir; home-manager
+    # reads generation metadata from the nix profile, not the config dir.
+    echo "→ Expiring old Home Manager generations..."
+    home-manager expire-generations "-0 days" 2>/dev/null || true
+
+    rm -rf "$HM_DEST"
+    mkdir -p "$HM_DEST/apps"
+
+    # home.nix lives read-only in the image at /usr/share/mirror-os/home.nix
+    # and is imported directly by flake.nix — it is NOT a user scaffold.
+    for template in flake.nix home-user.nix; do
         sed "s/__USERNAME__/$REAL_USER/g" \
             "$TEMPLATES_DIR/${template}.template" \
             > "$HM_DEST/$template"
     done
 
-    git -C "$HM_DEST" init -b main
+    git -C "$HM_DEST" init -b main -q
     git -C "$HM_DEST" config user.email "$REAL_USER@mirror-os.local"
     git -C "$HM_DEST" config user.name "$REAL_USER"
     git -C "$HM_DEST" add .
-    git -C "$HM_DEST" commit -m "initial"
+    git -C "$HM_DEST" commit -m "initial" -q
 
-    echo "→ Expiring old Home Manager generations..."
-    home-manager expire-generations "-0 days" || true
+    echo "→ Configuring user-scope Flatpak remote..."
+    flatpak remote-add --user --if-not-exists flathub \
+        https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 
     echo "→ Rebuilding Home Manager environment..."
-    nix profile remove home-manager 2>/dev/null && \
-        echo "  → Removed standalone home-manager from nix profile" || true
+    # Remove the nix profile symlink so the switch starts from a clean slate
+    # rather than layering on top of whatever was previously active (e.g. stale
+    # cosmic-manager packages from an old generation).
+    rm -f "$REAL_HOME/.nix-profile"
 
     cd "$HM_DEST"
     nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" || \
         echo "  → home-manager switch completed with warnings (check output above)."
+
+    # Update the image hash so mirror-sync doesn't immediately redo the
+    # image-update refresh on top of the freshly reset config.
+    _new_hash=$(sha256sum \
+        /usr/share/mirror-os/home.nix \
+        /usr/share/mirror-os/flake.nix.template \
+        /usr/share/mirror-os/home-user.nix.template \
+        2>/dev/null | sha256sum | cut -d' ' -f1 || true)
+    [ -n "$_new_hash" ] && \
+        echo "$_new_hash" > "$REAL_HOME/.local/share/mirror-os/state/system-hm.hash"
 fi
 
 # ── Flatpak reset ─────────────────────────────────────────────────────────────
@@ -156,20 +190,23 @@ if $DO_FLATPAKS; then
     sudo flatpak uninstall --system --all --noninteractive || true
     flatpak uninstall --user --all --noninteractive || true
 
-    # Clear Flatpak state so the git history starts fresh.
+    # Clear stale Flatpak state from the git state repo.
     rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-apps.list"
+    rm -f "$REAL_HOME/.local/share/mirror-os/state/flatpak-full.list"
 
-    # Reset the system stamp so mirror-os-flatpak-init.service reinstalls default apps on next boot.
-    sudo rm -f /var/lib/mirror-os/.flatpaks-installed
-    echo "  → Default apps will be reinstalled by mirror-os-flatpak-init.service on next boot."
+    # mirror-os-flatpak-init.service is a reconciler with no stamp file — it
+    # runs on every boot.  Restart it now to reinstall default apps immediately
+    # without waiting for a reboot.
+    echo "→ Reinstalling system Flatpak apps..."
+    sudo systemctl restart mirror-os-flatpak-init.service || \
+        echo "  → Service restart failed — default apps will reinstall on next boot."
 fi
 
 # ── COSMIC reset ──────────────────────────────────────────────────────────────
 if $DO_COSMIC; then
     echo "→ Resetting COSMIC desktop settings..."
-    sudo rm -rf "$REAL_HOME/.config/cosmic"
+    rm -rf "$REAL_HOME/.config/cosmic"
     cp -r /usr/share/cosmic "$REAL_HOME/.config/cosmic"
-    chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/.config/cosmic"
     echo "  → COSMIC config reset to Mirror OS defaults."
 fi
 
