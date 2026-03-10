@@ -19,6 +19,9 @@ chmod 0440 /etc/sudoers.d/mirror-os-nix-install
 # Shipped by the bootc RPM; stages new images periodically but never forces a reboot.
 systemctl enable bootc-fetch-apply-updates.timer
 
+systemctl --global enable mirror-os-init.service
+systemctl --global enable mirror-os-sync.timer
+systemctl --global enable mirror-os-apps.path
 systemctl --global enable mirror-os-catalog.timer
 
 firewall-offline-cmd --add-service=localsend
