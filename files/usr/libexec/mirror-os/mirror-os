@@ -600,7 +600,11 @@ cmd_install() {
             --flake)       use_flake=true; flake_url="$2"; flake_name="$3"; shift 3 ;;
             --pick|--interactive) pick=true; shift ;;
             --name)        override_name="$2"; shift 2 ;;
-            *)             query="$1"; shift ;;
+            *)
+                if [ -n "$query" ]; then
+                    die "Unexpected argument '${1}'. If the name has spaces, quote it: mirror-os install \"${query} ${1}\""
+                fi
+                query="$1"; shift ;;
         esac
     done
 
@@ -918,7 +922,11 @@ cmd_search() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --json) json=true; shift ;;
-            *)      query="$1"; shift ;;
+            *)
+                if [ -n "$query" ]; then
+                    die "Unexpected argument '${1}'. If the query has spaces, quote it: mirror-os search \"${query} ${1}\""
+                fi
+                query="$1"; shift ;;
         esac
     done
     [ -z "$query" ] && die "Usage: mirror-os search <query> [--json]"
