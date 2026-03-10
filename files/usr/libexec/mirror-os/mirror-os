@@ -857,7 +857,7 @@ cmd_uninstall() {
                 printf "No mirror-os module found, but '%s' is installed as a user Flatpak.\nRemove it? [y/N] " "$orphan_id"
                 read -r confirm
                 [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
-                flatpak --user uninstall --noninteractive "$orphan_id" >> "$LOG" 2>&1 && \
+                flatpak --user uninstall --noninteractive "$orphan_id" >> "$LOG_FILE" 2>&1 && \
                     log "uninstall: orphaned Flatpak '${orphan_id}'" || \
                     echo "Warning: flatpak uninstall failed — try: flatpak --user uninstall ${orphan_id}"
                 return
