@@ -59,12 +59,15 @@ trigger_switch() {
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
-    if home-manager switch --flake ".#$USER" --impure; then
+    if home-manager switch --flake ".#$USER" --impure >> "$LOG" 2>&1; then
         echo "Done."
         log "home-manager switch succeeded"
     else
         log "WARNING: home-manager switch failed"
-        die "home-manager switch failed — check ~/.local/share/mirror-os/mirror-os.log"
+        local last_err
+        last_err=$(grep "error:" "$LOG" | tail -1 2>/dev/null || true)
+        [ -n "$last_err" ] && echo "$last_err" >&2
+        die "home-manager switch failed — check $LOG"
     fi
 }
 
@@ -517,7 +520,7 @@ cmd_install() {
 
         inject_flake_input "$input_name" "$flake_url"
         echo "Locking flake inputs..."
-        (cd "$HM_CONFIG_DIR" && nix flake lock) || die "nix flake lock failed"
+        (cd "$HM_CONFIG_DIR" && nix flake lock >> "$LOG" 2>&1) || die "nix flake lock failed"
         write_pro_flake_module "$input_name" "$safe_name" "$out_file"
         log "install: pro flake '${safe_name}' from ${flake_url}"
         echo "Installed pro flake: ${safe_name}"
@@ -749,7 +752,7 @@ cmd_uninstall() {
                 printf "No mirror-os module found, but '%s' is installed as a user Flatpak.\nRemove it? [y/N] " "$orphan_id"
                 read -r confirm
                 [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
-                flatpak --user uninstall --noninteractive "$orphan_id" && \
+                flatpak --user uninstall --noninteractive "$orphan_id" >> "$LOG" 2>&1 && \
                     log "uninstall: orphaned Flatpak '${orphan_id}'" || \
                     echo "Warning: flatpak uninstall failed — try: flatpak --user uninstall ${orphan_id}"
                 return
