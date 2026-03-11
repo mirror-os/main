@@ -338,6 +338,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
     categories,
     tokenize = 'unicode61 remove_diacritics 1'
 );
+
+CREATE TABLE IF NOT EXISTS app_map (
+    slug         TEXT PRIMARY KEY,
+    flatpak_id   TEXT,
+    nix_attr     TEXT,
+    display_name TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_app_map_flatpak ON app_map(flatpak_id);
+CREATE INDEX IF NOT EXISTS idx_app_map_nix     ON app_map(nix_attr);
 """)
 
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -480,6 +489,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
     source, id, name, description, developer, categories,
     tokenize = 'unicode61 remove_diacritics 1'
 );
+CREATE TABLE IF NOT EXISTS app_map (
+    slug TEXT PRIMARY KEY, flatpak_id TEXT, nix_attr TEXT,
+    display_name TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_app_map_flatpak ON app_map(flatpak_id);
+CREATE INDEX IF NOT EXISTS idx_app_map_nix ON app_map(nix_attr);
 """)
 
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -513,16 +528,110 @@ PYEOF
     fi
 }
 
+# ── Cross-source app_map builder ─────────────────────────────────────────────
+
+build_app_map() {
+    log "Building cross-source app_map..."
+
+    python3 - "$CATALOG_DB" << 'PYEOF'
+import sys, sqlite3, re
+
+db_path = sys.argv[1]
+
+# ── Slug derivation constants ────────────────────────────────────────────────
+KNOWN_TLDS  = {'com','org','net','io','app','dev','me','co','edu','gov','uk','de','fr'}
+KNOWN_HOSTS = {'github','gitlab','bitbucket','codeberg','sr'}
+KNOWN_ORGS  = {'gnome','kde','xfce','freedesktop','mozilla','apache','microsoft'}
+TRAIL_SFXS  = {'client','desktop','app','stable','beta','nightly','gtk','gtk3','gtk4','bin'}
+
+def flatpak_slug(app_id):
+    parts = app_id.lower().split('.')
+    if parts and parts[0] in KNOWN_TLDS:              parts = parts[1:]
+    if parts and parts[0] in KNOWN_HOSTS:             parts = parts[1:]
+    if len(parts) > 1 and parts[0] in KNOWN_ORGS:    parts = parts[1:]
+    while len(parts) > 1 and parts[-1] in TRAIL_SFXS: parts = parts[:-1]
+    slug = '-'.join(parts)
+    slug = re.sub(r'[^a-z0-9-]', '-', slug)
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    return slug or app_id.lower().replace('.', '-')
+
+def nix_slug(attr):
+    # Skip language sub-namespace packages (not user-facing apps)
+    if re.match(r'^(python|perl|ruby|lua|node|haskell)', attr):
+        return ''
+    s = attr.lower()
+    for sfx in ('-git', '-bin', '-unwrapped', '-wrapped'):
+        if s.endswith(sfx):
+            s = s[:-len(sfx)]
+    return s
+
+# ── Load both catalogs ───────────────────────────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=30)
+
+flatpak_rows = conn.execute("SELECT app_id, name FROM flatpak_apps").fetchall()
+nix_rows     = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
+
+# Build slug → (id, name) dicts
+fp_slugs = {}
+for app_id, name in flatpak_rows:
+    s = flatpak_slug(app_id)
+    if s and s not in fp_slugs:
+        fp_slugs[s] = (app_id, name)
+
+nix_slugs = {}
+for attr, pname in nix_rows:
+    s = nix_slug(attr)
+    if s and s not in nix_slugs:
+        nix_slugs[s] = (attr, pname)
+
+# ── Build unified rows ───────────────────────────────────────────────────────
+all_slugs = set(fp_slugs) | set(nix_slugs)
+map_rows = []
+for slug in sorted(all_slugs):
+    fp_id, fp_name = fp_slugs.get(slug, (None, None))
+    nix_attr, nix_name = nix_slugs.get(slug, (None, None))
+    display_name = fp_name or nix_name or slug
+    map_rows.append((slug, fp_id, nix_attr, display_name))
+
+# ── Replace app_map ──────────────────────────────────────────────────────────
+with conn:
+    conn.execute("DELETE FROM app_map")
+    conn.executemany(
+        "INSERT INTO app_map(slug, flatpak_id, nix_attr, display_name) VALUES (?,?,?,?)",
+        map_rows,
+    )
+
+conn.close()
+
+both  = sum(1 for _, fp, nx, _ in map_rows if fp and nx)
+total = len(map_rows)
+print(f"app_map built: {total} slugs ({both} cross-source matches).")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "app_map built successfully."
+    else
+        log "app_map build failed (exit $rc)."
+    fi
+}
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 log "Starting catalog update (source: $SOURCE)..."
 
 case "$SOURCE" in
-    flatpak) update_flatpak ;;
-    nix)     update_nix ;;
+    flatpak)
+        update_flatpak || true
+        build_app_map
+        ;;
+    nix)
+        update_nix || true
+        build_app_map
+        ;;
     all)
         update_flatpak || true
         update_nix     || true
+        build_app_map
         ;;
 esac
 

@@ -1,34 +1,3 @@
 #!/usr/bin/env bash
-# mirror-update — update the Mirror OS image
-# Stages the latest image for the next reboot. Does NOT reboot automatically.
-set -euo pipefail
-
-if [ "$(id -u)" -ne 0 ]; then
-    exec sudo "$0" "$@"
-fi
-
-LOG="/var/log/mirror-os-update.log"
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
-    if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
-        mv "$LOG" "${LOG}.1"
-        touch "$LOG"
-    fi
-}
-
-log "=== mirror-update: checking for updates ==="
-
-echo "Checking for Mirror OS updates..."
-echo "(Image signature will be verified automatically.)"
-echo ""
-
-if bootc upgrade; then
-    log "bootc upgrade completed successfully"
-else
-    log "ERROR: bootc upgrade failed (exit code $?)"
-fi
-
-echo ""
-echo "Run 'bootc status' to check if an update was staged."
-echo "Reboot when ready to apply:  systemctl reboot"
+# mirror-update — backward-compatible wrapper for 'mirror-os system update'
+exec /usr/bin/mirror-os system update "$@"
