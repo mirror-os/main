@@ -180,6 +180,23 @@ cmd_info() {
     if [ ! -f "$out_file" ]; then
         local matches
         matches=$(find "$APPS_DIR" -name "*${id}*" -name "*.nix" 2>/dev/null | sort)
+
+        # Fallback: look up by source_id or slug in instances.db
+        # (handles slug-renamed files, e.g. info com.spotify.Client → finds spotify.nix)
+        if [ -z "$matches" ] && [ -f "$INSTANCES_DB" ]; then
+            local inst_file
+            inst_file=$(python3 -c "
+import sqlite3, sys, os
+try:
+    c=sqlite3.connect(sys.argv[1],timeout=3)
+    r=c.execute('SELECT module_file FROM app_instances WHERE source_id=? OR slug=?',
+                (sys.argv[2],sys.argv[2])).fetchone()
+    print(r[0] if r and os.path.exists(r[0]) else '')
+except: print('')
+" "$INSTANCES_DB" "$id" 2>/dev/null || true)
+            [ -n "$inst_file" ] && matches="$inst_file"
+        fi
+
         [ -z "$matches" ] && die "App '${id}' not found. Use 'mirror-os list' to see installed apps."
         local count; count=$(echo "$matches" | wc -l)
         if [ "$count" -gt 1 ]; then

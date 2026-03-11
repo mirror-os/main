@@ -10,8 +10,10 @@ usage() {
     echo "Usage: mirror-dev-reset [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "  --apps      Remove all app modules from apps/, clear instances.db, and run HM switch"
+    echo "  --data      Clear mirror-os databases only (instances.db + catalog.db); no HM changes"
     echo "  --nix       Wipe Nix user profile, GC the store, and re-scaffold HM config from templates"
-    echo "  --hm        Reset Home Manager config and rebuild Nix environment"
+    echo "  --hm        Reset Home Manager config and rebuild Nix environment (also clears instances.db)"
     echo "  --flatpaks  Remove all Flatpaks; restarts mirror-os-flatpak-init.service to reinstall default apps immediately"
     echo "  --cosmic    Reset COSMIC desktop settings"
     echo "  --init      Remove .init-complete (mirror-init re-runs on next boot)"
@@ -21,9 +23,13 @@ usage() {
     echo "No arguments: equivalent to --hm --flatpaks --cosmic"
     echo ""
     echo "Typical full reset: mirror-dev-reset --nix --hm --flatpaks --cosmic --init"
+    echo "App-only reset:     mirror-dev-reset --apps"
+    echo "Database-only wipe: mirror-dev-reset --data"
 }
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
+DO_APPS=false
+DO_DATA=false
 DO_NIX=false
 DO_HM=false
 DO_FLATPAKS=false
@@ -38,12 +44,14 @@ fi
 
 for arg in "$@"; do
     case "$arg" in
+        --apps)     DO_APPS=true ;;
+        --data)     DO_DATA=true ;;
         --nix)      DO_NIX=true ;;
         --hm)       DO_HM=true ;;
         --flatpaks) DO_FLATPAKS=true ;;
         --cosmic)   DO_COSMIC=true ;;
         --init)     DO_INIT=true ;;
-        --full)     DO_NIX=true; DO_HM=true; DO_FLATPAKS=true; DO_COSMIC=true; DO_INIT=true ;;
+        --full)     DO_APPS=true; DO_DATA=true; DO_NIX=true; DO_HM=true; DO_FLATPAKS=true; DO_COSMIC=true; DO_INIT=true ;;
         --help|-h)  usage; exit 0 ;;
         *)          echo "Unknown argument: $arg"; usage; exit 1 ;;
     esac
@@ -55,8 +63,10 @@ echo "WARNING: Mirror OS Development Reset"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "The following will be reset:"
+if $DO_APPS;     then echo "  - App modules (apps/*.nix removed, instances.db cleared, HM switch run)"; fi
+if $DO_DATA;     then echo "  - mirror-os databases (instances.db + catalog.db cleared)"; fi
 if $DO_NIX;      then echo "  - Nix user profile and store (garbage-collect all old packages) + HM config re-scaffolded from templates"; fi
-if $DO_HM;       then echo "  - Home Manager config and generations"; fi
+if $DO_HM;       then echo "  - Home Manager config and generations (including instances.db)"; fi
 if $DO_FLATPAKS; then echo "  - All Flatpaks (default apps reinstall on next boot via mirror-os-flatpak-init.service)"; fi
 if $DO_COSMIC;   then echo "  - COSMIC desktop settings"; fi
 if $DO_INIT;     then echo "  - Init marker (mirror-init will re-run on next boot)"; fi
@@ -69,11 +79,44 @@ REAL_USER=$(id -un)
 REAL_HOME="$HOME"
 TEMPLATES_DIR="/usr/share/mirror-os"
 HM_DEST="$REAL_HOME/.config/home-manager"
+MIRROR_DATA="$REAL_HOME/.local/share/mirror-os"
+INSTANCES_DB="$MIRROR_DATA/instances.db"
+CATALOG_DB="$MIRROR_DATA/catalog.db"
 
 NIX_PROFILE="/nix/var/nix/profiles/default/etc/profile.d/nix.sh"
 # shellcheck source=/dev/null
 source "$NIX_PROFILE"
 export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
+
+# ── App modules reset ─────────────────────────────────────────────────────────
+# Fast path: wipe only the per-app .nix modules and instances.db, then run
+# home-manager switch so the environment reflects the cleared app set.
+# Does NOT wipe the Nix profile or re-scaffold from templates.
+if $DO_APPS && ! $DO_HM && ! $DO_NIX; then
+    echo "→ Removing app modules from apps/..."
+    rm -f "$HM_DEST/apps/"*.nix 2>/dev/null || true
+    echo "  → App modules removed."
+
+    echo "→ Clearing instances.db..."
+    rm -f "$INSTANCES_DB"
+    echo "  → instances.db cleared."
+
+    echo "→ Running home-manager switch to apply..."
+    cd "$HM_DEST"
+    nix run nixpkgs#home-manager -- switch --flake ".#$REAL_USER" --impure || \
+        echo "  → home-manager switch completed with warnings (check output above)."
+fi
+
+# ── Database-only reset ───────────────────────────────────────────────────────
+# Clears catalog.db and instances.db without touching the Nix environment.
+# Use after testing installs/uninstalls to start fresh without a full HM rebuild.
+if $DO_DATA; then
+    echo "→ Clearing mirror-os databases..."
+    rm -f "$INSTANCES_DB"
+    echo "  → instances.db cleared."
+    rm -f "$CATALOG_DB"
+    echo "  → catalog.db cleared (run 'mirror-os catalog update' to rebuild)."
+fi
 
 # ── Nix user profile reset ────────────────────────────────────────────────────
 # Runs before --hm so the store is clean before home-manager switch rebuilds it.
@@ -98,6 +141,10 @@ if $DO_NIX; then
     rm -f "$REAL_HOME/.nix-profile"
 
     echo "  → Nix user profile wiped."
+
+    # Clear instances.db — all app records become stale when the HM config is wiped.
+    echo "  → Clearing instances.db..."
+    rm -f "$INSTANCES_DB"
 
     # Re-scaffold home-manager config from the current image templates so the
     # next switch picks up any template changes made during development.
@@ -141,6 +188,10 @@ if $DO_HM; then
     # reads generation metadata from the nix profile, not the config dir.
     echo "→ Expiring old Home Manager generations..."
     home-manager expire-generations "-0 days" 2>/dev/null || true
+
+    # Clear instances.db — records are stale once apps/ is wiped.
+    echo "→ Clearing instances.db..."
+    rm -f "$INSTANCES_DB"
 
     rm -rf "$HM_DEST"
     mkdir -p "$HM_DEST/apps"

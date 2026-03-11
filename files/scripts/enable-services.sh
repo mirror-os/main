@@ -2,6 +2,7 @@
 set -euo pipefail
 
 chmod +x /usr/bin/mirror-dev-reset
+chmod +x /usr/bin/mirror-dev-deploy
 chmod +x /usr/bin/mirror-os
 chmod +x /usr/bin/mirror-update
 chmod +x /usr/libexec/mirror-os/mirror-nix-install
@@ -10,6 +11,7 @@ chmod +x /usr/libexec/mirror-os/mirror-init
 chmod +x /usr/libexec/mirror-os/mirror-sync
 chmod +x /usr/libexec/mirror-os/mirror-os
 chmod +x /usr/libexec/mirror-os/mirror-catalog-update
+chmod +x /usr/libexec/mirror-os/waydroid-prestart.sh
 
 # sudoers files must be 0440 (root-readable only) or sudo will refuse them
 chmod 0440 /etc/sudoers.d/mirror-os-chsh

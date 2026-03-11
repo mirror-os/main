@@ -1,6 +1,122 @@
 # mirror-os lib/cmd-install.bash — install and uninstall commands
 # Sourced by mirror-os; do not execute directly.
 
+# ── Canonical ID helpers ─────────────────────────────────────────────────────
+
+# Resolve the canonical (slug-based) ID for an app from app_map.
+# Returns slug if found in catalog, else the source_id unchanged.
+# Usage: _resolve_canonical_id <source> <source_id>
+_resolve_canonical_id() {
+    local source="$1" source_id="$2"
+    [ -f "$CATALOG_DB" ] || { echo "$source_id"; return; }
+    python3 - "$CATALOG_DB" "$source" "$source_id" << 'PYEOF'
+import sys, sqlite3, os
+db, source, source_id = sys.argv[1], sys.argv[2], sys.argv[3]
+if not os.path.exists(db):
+    print(source_id); sys.exit(0)
+try:
+    conn = sqlite3.connect(db, timeout=5)
+    conn.execute("PRAGMA query_only = ON")
+    col = 'flatpak_id' if source == 'flatpak' else 'nix_attr'
+    row = conn.execute(f"SELECT slug FROM app_map WHERE {col}=?", (source_id,)).fetchone()
+    conn.close()
+    print(row[0] if row else source_id)
+except Exception:
+    print(source_id)
+PYEOF
+}
+
+# Return the source type of an existing module file: flatpak, nix, pro_flake, or unknown.
+_detect_module_source() {
+    local file="$1"
+    if grep -q "services\.flatpak" "$file" 2>/dev/null; then
+        echo "flatpak"
+    elif grep -q "home\.packages" "$file" 2>/dev/null; then
+        echo "nix"
+    elif grep -q "homeManagerModules" "$file" 2>/dev/null; then
+        echo "pro_flake"
+    else
+        echo "unknown"
+    fi
+}
+
+# Find an existing installed instance by slug (any source).
+# Queries instances.db for slug=? where the module file exists on disk.
+# Prints "instance_id|source|module_file" or empty string.
+_find_existing_by_slug() {
+    local slug="$1"
+    [ -f "$INSTANCES_DB" ] || return 0
+    python3 - "$INSTANCES_DB" "$slug" << 'PYEOF'
+import sys, sqlite3, os
+db, slug = sys.argv[1], sys.argv[2]
+try:
+    conn = sqlite3.connect(db, timeout=5)
+    conn.execute("PRAGMA query_only = ON")
+    row = conn.execute(
+        "SELECT instance_id, source, module_file FROM app_instances WHERE slug=?", (slug,)
+    ).fetchone()
+    conn.close()
+    if row and os.path.exists(row[2]):
+        print(f"{row[0]}|{row[1]}|{row[2]}")
+except Exception:
+    pass
+PYEOF
+}
+
+# Handle "already installed" state for a given canonical_id + desired source.
+# If the same source is installed → re-apply and return 1 (caller should return).
+# If a different source is installed → prompt to switch; if declined return 1.
+# If switch confirmed → removes old file/record and returns 0 (caller proceeds).
+# Usage: _check_or_switch_existing <canonical_id> <source> <name> <new_out_file>
+_check_or_switch_existing() {
+    local canonical_id="$1" source="$2" name="$3" new_out_file="$4"
+
+    # Check instances.db first (catches old source-id-named files too)
+    local existing_info existing_iid existing_src existing_file
+    existing_info=$(_find_existing_by_slug "$canonical_id")
+
+    # Also check if the slug-named file already exists on disk (new-style install)
+    if [ -z "$existing_info" ] && [ -f "$new_out_file" ]; then
+        local disk_src
+        disk_src=$(_detect_module_source "$new_out_file")
+        existing_info="${canonical_id}|${disk_src}|${new_out_file}"
+    fi
+
+    [ -z "$existing_info" ] && return 0   # not installed — caller proceeds
+
+    existing_iid=$(cut -d'|' -f1 <<< "$existing_info")
+    existing_src=$(cut -d'|' -f2 <<< "$existing_info")
+    existing_file=$(cut -d'|' -f3 <<< "$existing_info")
+
+    if [ "$existing_src" = "$source" ]; then
+        local src_label
+        [ "$source" = "flatpak" ] && src_label="Flatpak" || src_label="Nix"
+        echo "Already installed via ${src_label}. Re-applying..."
+        trigger_switch "mirror-os: re-apply ${canonical_id}"
+        return 1
+    fi
+
+    # Different source — prompt to switch
+    local old_label new_label
+    [ "$existing_src" = "flatpak" ] && old_label="Flatpak" || old_label="Nix"
+    [ "$source"       = "flatpak" ] && new_label="Flatpak" || new_label="Nix"
+    printf "'%s' is currently installed via %s. Switch to %s? [y/N] " \
+        "$name" "$old_label" "$new_label"
+    local confirm
+    read -r confirm
+    if ! [[ "$confirm" == [yY] ]]; then
+        echo "Cancelled."
+        return 1
+    fi
+
+    # Remove old module and deregister before writing new one
+    rm "$existing_file" 2>/dev/null || true
+    deregister_instance "$existing_iid"
+    return 0
+}
+
+# ── cmd_install ──────────────────────────────────────────────────────────────
+
 cmd_install() {
     need_init
     mkdir -p "$APPS_DIR"
@@ -23,7 +139,7 @@ cmd_install() {
         esac
     done
 
-    # Pro flake install
+    # Pro flake install (unchanged — no slug lookup for flakes)
     if $use_flake; then
         [ -z "$flake_url" ] || [ -z "$flake_name" ] && \
             die "Usage: mirror-os install --flake <url> <name>"
@@ -77,19 +193,16 @@ PYEOF
         exact_name=$(_lookup_name "$query" "flatpak")
         if [ -n "$exact_name" ]; then
             local name="${override_name:-$exact_name}"
-            local out_file
-            out_file=$(module_file "$query")
-            if [ -f "$out_file" ]; then
-                echo "Already tracked — re-applying to complete interrupted install..."
-                trigger_switch "mirror-os: re-apply ${query}"
-                return
-            fi
+            local canonical_id out_file
+            canonical_id=$(_resolve_canonical_id "flatpak" "$query")
+            out_file=$(module_file "$canonical_id")
+            _check_or_switch_existing "$canonical_id" "flatpak" "$name" "$out_file" || return
             _confirm_install "$query" "Flathub" "$query" || return
             write_flatpak_module "$query" "$name" "$out_file"
             log "install: Flatpak '${name}' (${query}) [direct]"
             echo "Installed Flatpak: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (${query}) [Flatpak]"
-            register_instance "$query" "flatpak" "$query" "$out_file"
+            register_instance "$canonical_id" "flatpak" "$query" "$out_file"
             return
         fi
         # Fallback: FTS search
@@ -111,19 +224,16 @@ PYEOF
         local src id name
         IFS=: read -r src id name <<< "$selection"
         [ -n "$override_name" ] && name="$override_name"
-        local out_file
-        out_file=$(module_file "$id")
-        if [ -f "$out_file" ]; then
-            echo "Already tracked — re-applying to complete interrupted install..."
-            trigger_switch "mirror-os: re-apply ${id}"
-            return
-        fi
+        local canonical_id out_file
+        canonical_id=$(_resolve_canonical_id "flatpak" "$id")
+        out_file=$(module_file "$canonical_id")
+        _check_or_switch_existing "$canonical_id" "flatpak" "$name" "$out_file" || return
         _confirm_install "$id" "Flathub" "$query" || return
         write_flatpak_module "$id" "$name" "$out_file"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
-        register_instance "$id" "flatpak" "$id" "$out_file"
+        register_instance "$canonical_id" "flatpak" "$id" "$out_file"
         return
     fi
 
@@ -134,19 +244,16 @@ PYEOF
         exact_name=$(_lookup_name "$query" "nix")
         if [ -n "$exact_name" ]; then
             local name="${override_name:-$exact_name}"
-            local out_file
-            out_file=$(module_file "$query")
-            if [ -f "$out_file" ]; then
-                echo "Already tracked — re-applying to complete interrupted install..."
-                trigger_switch "mirror-os: re-apply ${query}"
-                return
-            fi
+            local canonical_id out_file
+            canonical_id=$(_resolve_canonical_id "nix" "$query")
+            out_file=$(module_file "$canonical_id")
+            _check_or_switch_existing "$canonical_id" "nix" "$name" "$out_file" || return
             _confirm_install "$query" "Nix" "$query" || return
             write_nix_module "$query" "$name" "$out_file"
             log "install: Nix '${name}' (nixpkgs.${query}) [direct]"
             echo "Installed Nix package: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (nixpkgs.${query}) [Nix]"
-            register_instance "$query" "nix" "$query" "$out_file"
+            register_instance "$canonical_id" "nix" "$query" "$out_file"
             return
         fi
         # Fallback: FTS search
@@ -168,19 +275,16 @@ PYEOF
         local src id name
         IFS=: read -r src id name <<< "$selection"
         [ -n "$override_name" ] && name="$override_name"
-        local out_file
-        out_file=$(module_file "$id")
-        if [ -f "$out_file" ]; then
-            echo "Already tracked — re-applying to complete interrupted install..."
-            trigger_switch "mirror-os: re-apply ${id}"
-            return
-        fi
+        local canonical_id out_file
+        canonical_id=$(_resolve_canonical_id "nix" "$id")
+        out_file=$(module_file "$canonical_id")
+        _check_or_switch_existing "$canonical_id" "nix" "$name" "$out_file" || return
         _confirm_install "$id" "Nix" "$query" || return
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
-        register_instance "$id" "nix" "$id" "$out_file"
+        register_instance "$canonical_id" "nix" "$id" "$out_file"
         return
     fi
 
@@ -207,16 +311,14 @@ PYEOF
 
     local src id name
     IFS=: read -r src id name <<< "$selection"
-    local out_file
-    out_file=$(module_file "$id")
-    if [ -f "$out_file" ]; then
-        echo "Already tracked — re-applying to complete interrupted install..."
-        trigger_switch "mirror-os: re-apply ${id}"
-        return
-    fi
+    local canonical_id out_file
+    canonical_id=$(_resolve_canonical_id "$src" "$id")
+    out_file=$(module_file "$canonical_id")
 
     local src_display="Nix"
     [ "$src" = "flatpak" ] && src_display="Flathub"
+
+    _check_or_switch_existing "$canonical_id" "$src" "$name" "$out_file" || return
     _confirm_install "$id" "$src_display" "$query" || return
 
     if [ "$src" = "flatpak" ]; then
@@ -224,13 +326,13 @@ PYEOF
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
-        register_instance "$id" "flatpak" "$id" "$out_file"
+        register_instance "$canonical_id" "flatpak" "$id" "$out_file"
     else
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
-        register_instance "$id" "nix" "$id" "$out_file"
+        register_instance "$canonical_id" "nix" "$id" "$out_file"
     fi
 }
 
@@ -269,6 +371,23 @@ cmd_uninstall() {
         title_matches=$(grep -ril "^# .*${query}.*— installed via mirror-os" "$APPS_DIR" 2>/dev/null || true)
         all_matches=$(printf '%s\n%s\n' "$file_matches" "$title_matches" \
             | grep '\.nix$' | sort -u)
+
+        # Fallback: look up by source_id or slug in instances.db
+        # (handles slug-renamed files, e.g. uninstall com.spotify.Client → finds spotify.nix)
+        if [ -z "$all_matches" ] && [ -f "$INSTANCES_DB" ]; then
+            local inst_file
+            inst_file=$(python3 -c "
+import sqlite3, sys, os
+try:
+    c=sqlite3.connect(sys.argv[1],timeout=3)
+    r=c.execute('SELECT module_file FROM app_instances WHERE source_id=? OR slug=?',
+                (sys.argv[2],sys.argv[2])).fetchone()
+    print(r[0] if r and os.path.exists(r[0]) else '')
+except: print('')
+" "$INSTANCES_DB" "$query" 2>/dev/null || true)
+            [ -n "$inst_file" ] && all_matches="$inst_file"
+        fi
+
         if [ -z "$all_matches" ]; then
             # No module file — check for an orphaned user-scope Flatpak installation
             # (e.g. app still in launcher after an interrupted uninstall).

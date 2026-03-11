@@ -122,6 +122,8 @@ modules:
         destination: /etc/firewalld/services/localsend.xml
       - source: scripts/mirror-dev-reset.sh
         destination: /usr/bin/mirror-dev-reset
+      - source: scripts/mirror-dev-deploy.sh
+        destination: /usr/bin/mirror-dev-deploy
       - source: fonts/99-mirror-os-defaults.conf
         destination: /etc/fonts/conf.d/99-mirror-os-defaults.conf
 
