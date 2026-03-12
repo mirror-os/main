@@ -100,9 +100,19 @@ class TagStripper(HTMLParser):
     def get_text(self):
         return ' '.join(p.strip() for p in self._parts if p.strip())
 
+# xml:lang attribute key as used by Python's ElementTree
+_XML_LANG = '{http://www.w3.org/XML/1998/namespace}lang'
+
 def elem_text(elem, tag):
-    child = elem.find(tag)
-    return (child.text or '').strip() if child is not None else ''
+    # Prefer the element with no xml:lang (unlocalized / default English).
+    # Fall back to the first element found if every instance is localized.
+    fallback = None
+    for child in elem.findall(tag):
+        if _XML_LANG not in child.attrib:
+            return (child.text or '').strip()
+        if fallback is None:
+            fallback = child
+    return (fallback.text or '').strip() if fallback is not None else ''
 
 def oars_rating(comp):
     cr = comp.find("content_rating[@type='oars-1.1']")
@@ -118,7 +128,14 @@ def oars_rating(comp):
     return 'all'
 
 def desc_to_text(comp):
-    desc_elem = comp.find('description')
+    # Prefer <description> without xml:lang (unlocalized / default English)
+    desc_elem = None
+    for child in comp.findall('description'):
+        if _XML_LANG not in child.attrib:
+            desc_elem = child
+            break
+    if desc_elem is None:
+        desc_elem = comp.find('description')
     if desc_elem is None:
         return ''
     try:
@@ -185,7 +202,9 @@ for comp in root.iter('component'):
         elif utype == 'donation':   donation   = val
 
     cats = [c.text.strip() for c in comp.findall('categories/category') if c.text]
-    kws  = [k.text.strip() for k in comp.findall('keywords/keyword')    if k.text]
+    # Only include keywords from the unlocalized <keywords> block
+    kws  = [k.text.strip() for k in comp.findall('keywords/keyword')
+            if k.text and _XML_LANG not in k.attrib]
 
     # Icon: prefer cached (already on disk from flatpak), collect remote URL for later
     icon_name  = ''
