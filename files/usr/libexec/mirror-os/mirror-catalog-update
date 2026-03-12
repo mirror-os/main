@@ -39,10 +39,12 @@ fi
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
 SOURCE="all"
+NO_MEDIA=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source) SOURCE="$2"; shift 2 ;;
-        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|all]" >&2; exit 1 ;;
+        --no-media) NO_MEDIA=1; shift ;;
+        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|all] [--no-media]" >&2; exit 1 ;;
     esac
 done
 
@@ -60,7 +62,7 @@ mkdir -p "$MEDIA_DIR/screenshots"
 # ── Flatpak catalog update ───────────────────────────────────────────────────
 
 update_flatpak() {
-    log "Updating Flatpak catalog from AppStream XML..."
+    log "Updating Flatpak catalog from AppStream XML (Phase 1: parse + index)..."
 
     local appstream_path=""
     if [ -f "$APPSTREAM_GZ" ]; then
@@ -73,9 +75,10 @@ update_flatpak() {
         return 1
     fi
 
+    # Phase 1: parse XML, copy only already-present local icons, write DB.
+    # No network calls — completes in seconds.
     python3 - "$CATALOG_DB" "$appstream_path" "$MEDIA_DIR" << 'PYEOF'
-import sys, os, gzip, json, sqlite3, re, shutil
-import urllib.request
+import sys, os, gzip, json, sqlite3, re, shutil, time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import xml.etree.ElementTree as ET
@@ -97,42 +100,27 @@ class TagStripper(HTMLParser):
     def get_text(self):
         return ' '.join(p.strip() for p in self._parts if p.strip())
 
-def strip_html(markup):
-    if not markup:
-        return ''
-    s = TagStripper()
-    # ElementTree gives us a mixed-content string; serialise it first
-    try:
-        s.feed(markup if isinstance(markup, str) else ET.tostring(markup, encoding='unicode', method='html'))
-    except Exception:
-        pass
-    return s.get_text()
-
 def elem_text(elem, tag):
-    """First matching child text, or ''."""
     child = elem.find(tag)
     return (child.text or '').strip() if child is not None else ''
 
 def oars_rating(comp):
-    """Summarise OARS content_rating to 'all'/'moderate'/'intense'."""
     cr = comp.find("content_rating[@type='oars-1.1']")
     if cr is None:
         cr = comp.find('content_rating')
     if cr is None:
         return 'all'
     values = [v.text or '' for v in cr.findall('content_attribute')]
-    if any(v in ('intense',) for v in values):
+    if any(v == 'intense' for v in values):
         return 'intense'
-    if any(v in ('moderate',) for v in values):
+    if any(v == 'moderate' for v in values):
         return 'moderate'
     return 'all'
 
 def desc_to_text(comp):
-    """Convert <description> mixed XML to plain text."""
     desc_elem = comp.find('description')
     if desc_elem is None:
         return ''
-    # Serialize to HTML-ish string, then strip tags
     try:
         raw = ET.tostring(desc_elem, encoding='unicode', method='html')
         s = TagStripper()
@@ -142,6 +130,8 @@ def desc_to_text(comp):
         return (desc_elem.text or '').strip()
 
 # ── Parse AppStream XML ────────────────────────────────────────────────────
+t0 = time.monotonic()
+print("Parsing AppStream XML...", flush=True)
 opener = gzip.open if appstream.endswith('.gz') else open
 try:
     with opener(appstream, 'rb') as f:
@@ -149,10 +139,17 @@ try:
 except Exception as e:
     print(f"mirror-catalog-update: failed to parse AppStream XML: {e}", file=sys.stderr)
     sys.exit(1)
+print(f"  XML parsed in {time.monotonic()-t0:.1f}s", flush=True)
 
-rows     = []
-fts_rows = []
+rows       = []
+fts_rows   = []
+# Remote icon URLs collected for Phase 2 (downloaded separately, no network here)
+remote_icons = []  # (app_id, url)
+# Screenshot URLs collected for Phase 2
+remote_screenshots = []  # (app_id, [(url, caption, width, height)])
 
+n = 0
+t1 = time.monotonic()
 for comp in root.iter('component'):
     ctype = comp.get('type', '')
     if ctype not in ('desktop-application', 'console-application', 'desktop'):
@@ -162,11 +159,15 @@ for comp in root.iter('component'):
     if not app_id:
         continue
 
+    n += 1
+    if n % 200 == 0:
+        elapsed = time.monotonic() - t1
+        print(f"  Processed {n} apps ({elapsed:.1f}s)...", flush=True)
+
     name    = elem_text(comp, 'name')
     summary = elem_text(comp, 'summary')
     desc    = desc_to_text(comp)
 
-    # Developer name (AppStream 0.x vs 1.x schema)
     developer = elem_text(comp, 'developer_name')
     if not developer:
         dev_elem = comp.find('developer')
@@ -175,43 +176,41 @@ for comp in root.iter('component'):
 
     license_ = elem_text(comp, 'project_license')
 
-    # URLs
     homepage = bugtracker = donation = ''
     for url_elem in comp.findall('url'):
         utype = url_elem.get('type', '')
         val   = (url_elem.text or '').strip()
-        if utype == 'homepage':    homepage   = val
+        if utype == 'homepage':     homepage   = val
         elif utype == 'bugtracker': bugtracker = val
         elif utype == 'donation':   donation   = val
 
-    # Categories
     cats = [c.text.strip() for c in comp.findall('categories/category') if c.text]
+    kws  = [k.text.strip() for k in comp.findall('keywords/keyword')    if k.text]
 
-    # Keywords
-    kws = [k.text.strip() for k in comp.findall('keywords/keyword') if k.text]
-
-    # Icon (prefer cached 128px, then any cached)
-    icon_name = ''
-    best_size = 0
+    # Icon: prefer cached (already on disk from flatpak), collect remote URL for later
+    icon_name  = ''
+    best_size  = 0
+    remote_icon_url = ''
     for icon in comp.findall('icon'):
-        if icon.get('type') == 'cached':
+        itype = icon.get('type', '')
+        if itype == 'cached':
             try:
                 sz = int(icon.get('width', 0))
             except ValueError:
                 sz = 0
             if sz > best_size or not icon_name:
-                icon_name = (icon.text or '').strip()
-                icon_name = re.sub(r'\.(png|svg|xpm)$', '', icon_name, flags=re.IGNORECASE)
+                icon_name = re.sub(r'\.(png|svg|xpm)$', '', (icon.text or '').strip(), flags=re.IGNORECASE)
                 best_size = sz
+        elif itype == 'remote' and not remote_icon_url:
+            remote_icon_url = (icon.text or '').strip()
 
-    # Resolve icon to local path
+    # Try to resolve icon from local flatpak cache (no network)
     icon_local_path = ''
     if icon_name:
         dst_icon = os.path.join(icons_dir, f'{app_id}.png')
         if os.path.isfile(dst_icon) and os.path.getsize(dst_icon) > 0:
             icon_local_path = dst_icon
         else:
-            # 1. Copy from flatpak's pre-cached icon dir
             for size in ('128x128', '64x64', '128x128@2'):
                 if icon_local_path:
                     break
@@ -224,27 +223,11 @@ for comp in root.iter('component'):
                         except Exception:
                             pass
                         break
-            # 2. Fallback: download from AppStream remote icon URL
-            if not icon_local_path:
-                for icon_elem in comp.findall("icon[@type='remote']"):
-                    remote_url = (icon_elem.text or '').strip()
-                    if remote_url:
-                        try:
-                            req = urllib.request.Request(
-                                remote_url,
-                                headers={'User-Agent': 'mirror-catalog-update/1.0'},
-                            )
-                            with urllib.request.urlopen(req, timeout=10) as resp:
-                                data = resp.read()
-                            if data:
-                                with open(dst_icon, 'wb') as f:
-                                    f.write(data)
-                                icon_local_path = dst_icon
-                        except Exception:
-                            pass
-                        break
+            # Queue remote download for Phase 2 if still missing
+            if not icon_local_path and remote_icon_url:
+                remote_icons.append((app_id, remote_icon_url))
 
-    # Screenshots (source images only) — download to local cache
+    # Screenshots: build metadata from XML; local paths resolved in Phase 2
     screenshots_raw = []
     for ss in comp.findall('screenshots/screenshot'):
         caption = elem_text(ss, 'caption')
@@ -253,81 +236,54 @@ for comp in root.iter('component'):
                 url = (img.text or '').strip()
                 if url:
                     screenshots_raw.append({
-                        'url':     url,
-                        'caption': caption,
-                        'width':   int(img.get('width', 0) or 0),
-                        'height':  int(img.get('height', 0) or 0),
+                        'url': url, 'caption': caption,
+                        'width':  int(img.get('width',  0) or 0),
+                        'height': int(img.get('height', 0) or 0),
                     })
-                break  # one source image per screenshot
+                break
 
+    # Resolve already-cached screenshots; queue the rest for Phase 2
     screenshots = []
     if screenshots_raw:
         ss_dir = os.path.join(ss_base_dir, app_id)
-        os.makedirs(ss_dir, exist_ok=True)
+        need_download = False
         for i, ss in enumerate(screenshots_raw):
             local_path = os.path.join(ss_dir, f'{i}.jpg')
-            if not (os.path.isfile(local_path) and os.path.getsize(local_path) > 0):
-                try:
-                    req = urllib.request.Request(
-                        ss['url'],
-                        headers={'User-Agent': 'mirror-catalog-update/1.0'},
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        data = resp.read()
-                    if data:
-                        with open(local_path, 'wb') as f:
-                            f.write(data)
-                except Exception:
-                    local_path = ''
-            screenshots.append(dict(ss, local_path=local_path if os.path.isfile(local_path) and os.path.getsize(local_path) > 0 else ''))
+            if os.path.isfile(local_path) and os.path.getsize(local_path) > 0:
+                screenshots.append(dict(ss, local_path=local_path))
+            else:
+                screenshots.append(dict(ss, local_path=''))
+                need_download = True
+        if need_download:
+            remote_screenshots.append((app_id, screenshots_raw))
 
-    # Content rating
     content_rating = oars_rating(comp)
 
-    # Flatpak bundle ref
     flatpak_ref = ''
     bundle = comp.find("bundle[@type='flatpak']")
     if bundle is not None:
         flatpak_ref = (bundle.text or '').strip()
 
-    # Releases (newest first; keep up to 10)
     releases_out = []
-    version = ''
-    release_date = ''
+    version = release_date = ''
     release_timestamp = 0
     releases_elem = comp.find('releases')
     if releases_elem is not None:
         for rel in list(releases_elem.findall('release'))[:10]:
-            rv   = rel.get('version', '')
-            rts  = rel.get('timestamp', '')
+            rv    = rel.get('version', '')
+            rts   = rel.get('timestamp', '')
             rdate = rel.get('date', '')
-
-            # Prefer explicit date attr; fall back to converting timestamp
-            if rdate:
-                pass
-            elif rts and rts.isdigit():
+            if not rdate and rts and rts.isdigit():
                 try:
                     rdate = datetime.fromtimestamp(int(rts), tz=timezone.utc).strftime('%Y-%m-%d')
                 except Exception:
                     rdate = ''
-
             ts_int = int(rts) if rts and rts.isdigit() else 0
-
-            rdesc_elem = rel.find('description')
-            rdesc = desc_to_text(rel) if rdesc_elem is not None else ''
-
-            releases_out.append({
-                'version':     rv,
-                'date':        rdate,
-                'timestamp':   ts_int,
-                'description': rdesc,
-            })
+            rdesc  = desc_to_text(rel) if rel.find('description') is not None else ''
+            releases_out.append({'version': rv, 'date': rdate, 'timestamp': ts_int, 'description': rdesc})
             if not version:
-                version           = rv
-                release_date      = rdate
-                release_timestamp = ts_int
+                version = rv; release_date = rdate; release_timestamp = ts_int
 
-    # Flathub verification
     verified = 0
     for val_elem in comp.findall('custom/value'):
         if val_elem.get('key') == 'flathub::verification::verified':
@@ -341,18 +297,12 @@ for comp in root.iter('component'):
         json.dumps(screenshots), content_rating, flatpak_ref,
         json.dumps(releases_out), verified, 0, icon_local_path,
     ))
+    fts_rows.append(('flatpak', app_id, name, summary or desc[:200], developer, ' '.join(cats)))
 
-    fts_rows.append((
-        'flatpak', app_id, name,
-        summary or desc[:200],
-        developer,
-        ' '.join(cats),
-    ))
+print(f"  Parsed {n} apps in {time.monotonic()-t1:.1f}s; writing DB...", flush=True)
 
 # ── Write to DB ────────────────────────────────────────────────────────────
 conn = sqlite3.connect(db_path, timeout=30)
-
-# Schema init (idempotent)
 conn.executescript("""
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -381,83 +331,180 @@ CREATE TABLE IF NOT EXISTS flatpak_apps (
     monthly_downloads INTEGER NOT NULL DEFAULT 0,
     icon_local_path   TEXT NOT NULL DEFAULT ''
 );
-
 CREATE TABLE IF NOT EXISTS nix_packages (
-    attr             TEXT PRIMARY KEY,
-    pname            TEXT NOT NULL,
-    version          TEXT NOT NULL DEFAULT '',
-    description      TEXT NOT NULL DEFAULT '',
-    long_description TEXT NOT NULL DEFAULT '',
-    homepage         TEXT NOT NULL DEFAULT '',
-    license          TEXT NOT NULL DEFAULT '',
-    maintainers      TEXT NOT NULL DEFAULT '[]'
+    attr TEXT PRIMARY KEY, pname TEXT NOT NULL,
+    version TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+    long_description TEXT NOT NULL DEFAULT '', homepage TEXT NOT NULL DEFAULT '',
+    license TEXT NOT NULL DEFAULT '', maintainers TEXT NOT NULL DEFAULT '[]'
 );
-
 CREATE TABLE IF NOT EXISTS catalog_meta (
-    source     TEXT PRIMARY KEY,
-    updated_at TEXT NOT NULL,
-    row_count  INTEGER NOT NULL DEFAULT 0
+    source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
-    source,
-    id,
-    name,
-    description,
-    developer,
-    categories,
+    source, id, name, description, developer, categories,
     tokenize = 'unicode61 remove_diacritics 1'
 );
-
 CREATE TABLE IF NOT EXISTS app_map (
-    slug         TEXT PRIMARY KEY,
-    flatpak_id   TEXT,
-    nix_attr     TEXT,
+    slug TEXT PRIMARY KEY, flatpak_id TEXT, nix_attr TEXT,
     display_name TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_app_map_flatpak ON app_map(flatpak_id);
 CREATE INDEX IF NOT EXISTS idx_app_map_nix     ON app_map(nix_attr);
 """)
 
-now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
-# Migration guard: add new columns to existing DBs
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
 ]:
     try:
         conn.execute(col_def)
     except Exception:
-        pass  # column already exists
+        pass
 
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 with conn:
     conn.execute("DELETE FROM flatpak_apps")
-    conn.executemany("""
-        INSERT OR REPLACE INTO flatpak_apps VALUES (
-            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-        )
-    """, rows)
-
+    conn.executemany("INSERT OR REPLACE INTO flatpak_apps VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.execute("DELETE FROM catalog_fts WHERE source='flatpak'")
-    conn.executemany(
-        "INSERT INTO catalog_fts(source,id,name,description,developer,categories) VALUES (?,?,?,?,?,?)",
-        fts_rows,
-    )
-
-    conn.execute("""
-        INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count)
-        VALUES ('flatpak', ?, ?)
-    """, (now, len(rows)))
-
+    conn.executemany("INSERT INTO catalog_fts(source,id,name,description,developer,categories) VALUES (?,?,?,?,?,?)", fts_rows)
+    conn.execute("INSERT OR REPLACE INTO catalog_meta(source,updated_at,row_count) VALUES ('flatpak',?,?)", (now, len(rows)))
 conn.close()
-print(f"Flatpak catalog updated: {len(rows)} apps indexed.")
+
+icons_needed  = len(remote_icons)
+ss_needed     = len(remote_screenshots)
+print(f"Flatpak catalog updated: {len(rows)} apps indexed. "
+      f"Icons missing: {icons_needed}. Apps needing screenshot downloads: {ss_needed}.", flush=True)
+
+# Write pending download lists for Phase 2
+import json as _json
+pending_file = os.path.join(media_dir, '.pending_downloads.json')
+with open(pending_file, 'w') as f:
+    _json.dump({'icons': remote_icons, 'screenshots': remote_screenshots}, f)
+PYEOF
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        log "Flatpak catalog update (Phase 1) failed (exit $rc)."
+        return $rc
+    fi
+    log "Flatpak catalog updated successfully (Phase 1 complete)."
+}
+
+# Phase 2: download missing icons and screenshots (network, can be slow on first run)
+cache_flatpak_media() {
+    local pending_file="$MEDIA_DIR/.pending_downloads.json"
+    if [ ! -f "$pending_file" ]; then
+        log "No pending media downloads."
+        return 0
+    fi
+
+    log "Caching Flatpak media (Phase 2: downloading missing icons and screenshots)..."
+
+    python3 - "$CATALOG_DB" "$MEDIA_DIR" << 'PYEOF'
+import sys, os, json, sqlite3, time
+import urllib.request
+
+db_path    = sys.argv[1]
+media_dir  = sys.argv[2]
+icons_dir  = os.path.join(media_dir, 'icons')
+ss_base_dir = os.path.join(media_dir, 'screenshots')
+pending_file = os.path.join(media_dir, '.pending_downloads.json')
+
+with open(pending_file) as f:
+    pending = json.load(f)
+
+remote_icons       = pending.get('icons', [])
+remote_screenshots = pending.get('screenshots', [])
+
+UA = {'User-Agent': 'mirror-catalog-update/1.0'}
+ICON_TIMEOUT = 8
+SS_TIMEOUT   = 10
+# Total wall-clock budget for all media downloads (30 min)
+TOTAL_BUDGET = 1800
+t_start = time.monotonic()
+
+def budget_remaining():
+    return TOTAL_BUDGET - (time.monotonic() - t_start)
+
+def fetch(url, timeout):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+# ── Icons ─────────────────────────────────────────────────────────────────
+icon_updates = []  # (icon_local_path, app_id)
+n_icons = len(remote_icons)
+print(f"Downloading {n_icons} missing icons...", flush=True)
+for i, (app_id, url) in enumerate(remote_icons):
+    if budget_remaining() <= 0:
+        print(f"  Budget exhausted after {i} icons; deferring rest.", flush=True)
+        break
+    if i > 0 and i % 50 == 0:
+        print(f"  Icons: {i}/{n_icons} ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
+    dst = os.path.join(icons_dir, f'{app_id}.png')
+    if os.path.isfile(dst) and os.path.getsize(dst) > 0:
+        icon_updates.append((dst, app_id))
+        continue
+    try:
+        data = fetch(url, ICON_TIMEOUT)
+        if data:
+            with open(dst, 'wb') as f:
+                f.write(data)
+            icon_updates.append((dst, app_id))
+    except Exception:
+        pass
+
+# ── Screenshots ───────────────────────────────────────────────────────────
+ss_updates = {}  # app_id -> screenshots JSON
+n_apps = len(remote_screenshots)
+n_done = 0
+print(f"Downloading screenshots for {n_apps} apps...", flush=True)
+for app_id, screenshots_raw in remote_screenshots:
+    if budget_remaining() <= 0:
+        print(f"  Budget exhausted after {n_done}/{n_apps} apps; deferring rest.", flush=True)
+        break
+    n_done += 1
+    if n_done % 100 == 0:
+        print(f"  Screenshots: {n_done}/{n_apps} apps ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
+
+    ss_dir = os.path.join(ss_base_dir, app_id)
+    os.makedirs(ss_dir, exist_ok=True)
+    screenshots = []
+    for i, ss in enumerate(screenshots_raw):
+        local_path = os.path.join(ss_dir, f'{i}.jpg')
+        if os.path.isfile(local_path) and os.path.getsize(local_path) > 0:
+            screenshots.append(dict(ss, local_path=local_path))
+            continue
+        try:
+            data = fetch(ss['url'], SS_TIMEOUT)
+            if data:
+                with open(local_path, 'wb') as f:
+                    f.write(data)
+                screenshots.append(dict(ss, local_path=local_path))
+                continue
+        except Exception:
+            pass
+        screenshots.append(dict(ss, local_path=''))
+    ss_updates[app_id] = json.dumps(screenshots)
+
+# ── Write updates back to DB ──────────────────────────────────────────────
+if icon_updates or ss_updates:
+    conn = sqlite3.connect(db_path, timeout=30)
+    with conn:
+        for local_path, app_id in icon_updates:
+            conn.execute("UPDATE flatpak_apps SET icon_local_path=? WHERE app_id=?", (local_path, app_id))
+        for app_id, ss_json in ss_updates.items():
+            conn.execute("UPDATE flatpak_apps SET screenshots=? WHERE app_id=?", (ss_json, app_id))
+    conn.close()
+
+os.remove(pending_file)
+elapsed = time.monotonic() - t_start
+print(f"Phase 2 complete: {len(icon_updates)} icons, {len(ss_updates)} apps with screenshots "
+      f"updated in {elapsed:.1f}s.", flush=True)
 PYEOF
     local rc=$?
     if [ $rc -eq 0 ]; then
-        log "Flatpak catalog updated successfully."
+        log "Flatpak media cache updated (Phase 2 complete)."
     else
-        log "Flatpak catalog update failed (exit $rc)."
-        return $rc
+        log "Flatpak media cache update failed (exit $rc)."
     fi
 }
 
@@ -733,7 +780,7 @@ PYEOF
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 
-log "Starting catalog update (source: $SOURCE)..."
+log "Starting catalog update (source: $SOURCE, media: $([ $NO_MEDIA -eq 1 ] && echo skip || echo enabled))..."
 
 case "$SOURCE" in
     flatpak)
@@ -750,5 +797,11 @@ case "$SOURCE" in
         build_app_map
         ;;
 esac
+
+if [ $NO_MEDIA -eq 0 ]; then
+    cache_flatpak_media || true
+else
+    log "Skipping media download (--no-media)."
+fi
 
 log "Catalog update complete."
