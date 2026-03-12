@@ -354,6 +354,8 @@ CREATE INDEX IF NOT EXISTS idx_app_map_nix     ON app_map(nix_attr);
 
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
 ]:
     try:
         conn.execute(col_def)
@@ -642,6 +644,8 @@ CREATE INDEX IF NOT EXISTS idx_app_map_nix ON app_map(nix_attr);
 # Migration guard
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
 ]:
     try:
@@ -749,6 +753,8 @@ for slug in sorted(all_slugs):
 # ── Migration guard ───────────────────────────────────────────────────────────
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
 ]:
     try:
