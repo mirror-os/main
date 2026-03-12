@@ -3,8 +3,8 @@
 
 # ── Canonical ID helpers ─────────────────────────────────────────────────────
 
-# Resolve the canonical (slug-based) ID for an app from app_map.
-# Returns slug if found in catalog, else the source_id unchanged.
+# Resolve the canonical (slug-based) filename ID for an app from catalog.db app_map.
+# Returns slug if found, else source_id unchanged. Used to name the .nix module file.
 # Usage: _resolve_canonical_id <source> <source_id>
 _resolve_canonical_id() {
     local source="$1" source_id="$2"
@@ -40,53 +40,18 @@ _detect_module_source() {
     fi
 }
 
-# Find an existing installed instance by slug (any source).
-# Queries instances.db for slug=? where the module file exists on disk.
-# Prints "instance_id|source|module_file" or empty string.
-_find_existing_by_slug() {
-    local slug="$1"
-    [ -f "$INSTANCES_DB" ] || return 0
-    python3 - "$INSTANCES_DB" "$slug" << 'PYEOF'
-import sys, sqlite3, os
-db, slug = sys.argv[1], sys.argv[2]
-try:
-    conn = sqlite3.connect(db, timeout=5)
-    conn.execute("PRAGMA query_only = ON")
-    row = conn.execute(
-        "SELECT instance_id, source, module_file FROM app_instances WHERE slug=?", (slug,)
-    ).fetchone()
-    conn.close()
-    if row and os.path.exists(row[2]):
-        print(f"{row[0]}|{row[1]}|{row[2]}")
-except Exception:
-    pass
-PYEOF
-}
-
 # Handle "already installed" state for a given canonical_id + desired source.
 # If the same source is installed → re-apply and return 1 (caller should return).
 # If a different source is installed → prompt to switch; if declined return 1.
-# If switch confirmed → removes old file/record and returns 0 (caller proceeds).
+# If switch confirmed → removes old file and returns 0 (caller proceeds).
 # Usage: _check_or_switch_existing <canonical_id> <source> <name> <new_out_file>
 _check_or_switch_existing() {
     local canonical_id="$1" source="$2" name="$3" new_out_file="$4"
 
-    # Check instances.db first (catches old source-id-named files too)
-    local existing_info existing_iid existing_src existing_file
-    existing_info=$(_find_existing_by_slug "$canonical_id")
+    [ -f "$new_out_file" ] || return 0   # not installed — caller proceeds
 
-    # Also check if the slug-named file already exists on disk (new-style install)
-    if [ -z "$existing_info" ] && [ -f "$new_out_file" ]; then
-        local disk_src
-        disk_src=$(_detect_module_source "$new_out_file")
-        existing_info="${canonical_id}|${disk_src}|${new_out_file}"
-    fi
-
-    [ -z "$existing_info" ] && return 0   # not installed — caller proceeds
-
-    existing_iid=$(cut -d'|' -f1 <<< "$existing_info")
-    existing_src=$(cut -d'|' -f2 <<< "$existing_info")
-    existing_file=$(cut -d'|' -f3 <<< "$existing_info")
+    local existing_src
+    existing_src=$(_detect_module_source "$new_out_file")
 
     if [ "$existing_src" = "$source" ]; then
         local src_label
@@ -109,9 +74,7 @@ _check_or_switch_existing() {
         return 1
     fi
 
-    # Remove old module and deregister before writing new one
-    rm "$existing_file" 2>/dev/null || true
-    deregister_instance "$existing_iid"
+    rm "$new_out_file" 2>/dev/null || true
     return 0
 }
 
@@ -156,7 +119,6 @@ cmd_install() {
         log "install: pro flake '${safe_name}' from ${flake_url}"
         echo "Installed pro flake: ${safe_name}"
         trigger_switch "mirror-os: install flake ${safe_name}"
-        register_instance "$safe_name" "pro_flake" "$safe_name" "$out_file"
         return
     fi
 
@@ -202,7 +164,6 @@ PYEOF
             log "install: Flatpak '${name}' (${query}) [direct]"
             echo "Installed Flatpak: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (${query}) [Flatpak]"
-            register_instance "$canonical_id" "flatpak" "$query" "$out_file"
             return
         fi
         # Fallback: FTS search
@@ -233,7 +194,6 @@ PYEOF
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
-        register_instance "$canonical_id" "flatpak" "$id" "$out_file"
         return
     fi
 
@@ -253,7 +213,6 @@ PYEOF
             log "install: Nix '${name}' (nixpkgs.${query}) [direct]"
             echo "Installed Nix package: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (nixpkgs.${query}) [Nix]"
-            register_instance "$canonical_id" "nix" "$query" "$out_file"
             return
         fi
         # Fallback: FTS search
@@ -284,7 +243,6 @@ PYEOF
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
-        register_instance "$canonical_id" "nix" "$id" "$out_file"
         return
     fi
 
@@ -326,13 +284,11 @@ PYEOF
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
-        register_instance "$canonical_id" "flatpak" "$id" "$out_file"
     else
         write_nix_module "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
-        register_instance "$canonical_id" "nix" "$id" "$out_file"
     fi
 }
 
@@ -372,20 +328,24 @@ cmd_uninstall() {
         all_matches=$(printf '%s\n%s\n' "$file_matches" "$title_matches" \
             | grep '\.nix$' | sort -u)
 
-        # Fallback: look up by source_id or slug in instances.db
-        # (handles slug-renamed files, e.g. uninstall com.spotify.Client → finds spotify.nix)
-        if [ -z "$all_matches" ] && [ -f "$INSTANCES_DB" ]; then
-            local inst_file
-            inst_file=$(python3 -c "
+        # Fallback: resolve source ID → slug via catalog.db app_map
+        # (e.g. uninstall com.spotify.Client → finds spotify.nix)
+        if [ -z "$all_matches" ] && [ -f "$CATALOG_DB" ]; then
+            local slug_from_catalog
+            slug_from_catalog=$(python3 -c "
 import sqlite3, sys, os
 try:
     c=sqlite3.connect(sys.argv[1],timeout=3)
-    r=c.execute('SELECT module_file FROM app_instances WHERE source_id=? OR slug=?',
-                (sys.argv[2],sys.argv[2])).fetchone()
-    print(r[0] if r and os.path.exists(r[0]) else '')
+    c.execute('PRAGMA query_only = ON')
+    q=sys.argv[2]
+    r=c.execute('SELECT slug FROM app_map WHERE flatpak_id=? OR nix_attr=?',(q,q)).fetchone()
+    print(r[0] if r else '')
 except: print('')
-" "$INSTANCES_DB" "$query" 2>/dev/null || true)
-            [ -n "$inst_file" ] && all_matches="$inst_file"
+" "$CATALOG_DB" "$query" 2>/dev/null || true)
+            if [ -n "$slug_from_catalog" ]; then
+                local slug_file; slug_file=$(module_file "$slug_from_catalog")
+                [ -f "$slug_file" ] && all_matches="$slug_file"
+            fi
         fi
 
         if [ -z "$all_matches" ]; then
@@ -445,7 +405,6 @@ except: print('')
     fi
 
     rm "$out_file"
-    deregister_instance "$id"
     log "uninstall: '${id}'"
     echo "Uninstalled: ${id}"
     trigger_switch "mirror-os: uninstall ${id}"

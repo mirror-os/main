@@ -11,8 +11,6 @@
 #   mirror-os browse [--source flatpak|nix|all] [--category <cat>] [--limit N] [--json]
 #   mirror-os list [--json]
 #   mirror-os info <id> [--json]
-#   mirror-os rename <id> <label>
-#   mirror-os instances <slug> [--json]
 #   mirror-os update
 #   mirror-os catalog update|status
 #   mirror-os snapshots [--type cosmic|apps|all] [--json]
@@ -33,7 +31,6 @@ APPS_DIR="$HOME/.config/home-manager/apps"
 HM_CONFIG_DIR="$HOME/.config/home-manager"
 FLAKE_NIX="$HM_CONFIG_DIR/flake.nix"
 CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
-INSTANCES_DB="$HOME/.local/share/mirror-os/instances.db"
 LOG_FILE="$HOME/.local/share/mirror-os/mirror-os.log"
 VERBOSE_LOG=false
 
@@ -46,8 +43,6 @@ source "$_LIB/core.bash"
 source "$_LIB/catalog.bash"
 # shellcheck source=lib/modules.bash
 source "$_LIB/modules.bash"
-# shellcheck source=lib/instances.bash
-source "$_LIB/instances.bash"
 # shellcheck source=lib/cmd-install.bash
 source "$_LIB/cmd-install.bash"
 # shellcheck source=lib/cmd-search.bash
@@ -78,8 +73,6 @@ Usage:
              [--category <cat>] [--limit N] [--json]
   mirror-os list [--json]                          List mirror-os managed apps
   mirror-os info <id> [--json]                     Show app details and module
-  mirror-os rename <id> <label>                    Set a display label for an installed app
-  mirror-os instances <slug> [--json]              Show all instances of an app (cross-source)
   mirror-os update                                 Update flake.lock and switch
   mirror-os catalog update [--source flatpak|nix|all]  Rebuild app catalog DB
   mirror-os catalog status                         Show catalog build status
@@ -136,8 +129,6 @@ log "CMD: ${*}${VERBOSE_LOG:+ [--log]}"
 case "${1:-}" in
     install)   shift; cmd_install "$@" ;;
     uninstall) shift; cmd_uninstall "$@" ;;
-    rename)    shift; cmd_rename "$@" ;;
-    instances) shift; cmd_instances "$@" ;;
     search)    shift; cmd_search "$@" ;;
     browse)    shift; cmd_browse "$@" ;;
     list)      shift; cmd_list "$@" ;;
