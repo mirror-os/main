@@ -32,15 +32,32 @@ trigger_switch() {
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
-    if home-manager switch --flake ".#$USER" --impure >> "$LOG_FILE" 2>&1; then
-        echo "Done."
-        log "home-manager switch succeeded"
+    if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
+        # Stream mode: tee HM output to both stdout (for caller progress tracking)
+        # and the log file.  PIPESTATUS[0] captures home-manager's exit code.
+        home-manager switch --flake ".#$USER" --impure 2>&1 | tee -a "$LOG_FILE"
+        local hm_status=${PIPESTATUS[0]}
+        if [ "$hm_status" -eq 0 ]; then
+            echo "Done."
+            log "home-manager switch succeeded"
+        else
+            log "WARNING: home-manager switch failed"
+            local last_err
+            last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
+            [ -n "$last_err" ] && echo "$last_err" >&2
+            die "home-manager switch failed — check $LOG_FILE"
+        fi
     else
-        log "WARNING: home-manager switch failed"
-        local last_err
-        last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
-        [ -n "$last_err" ] && echo "$last_err" >&2
-        die "home-manager switch failed — check $LOG_FILE"
+        if home-manager switch --flake ".#$USER" --impure >> "$LOG_FILE" 2>&1; then
+            echo "Done."
+            log "home-manager switch succeeded"
+        else
+            log "WARNING: home-manager switch failed"
+            local last_err
+            last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
+            [ -n "$last_err" ] && echo "$last_err" >&2
+            die "home-manager switch failed — check $LOG_FILE"
+        fi
     fi
 }
 
