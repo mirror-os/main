@@ -19,6 +19,7 @@ LOCK_FILE="/tmp/mirror-catalog-update.lock"
 LOG_FILE="$HOME/.local/share/mirror-os/catalog-update.log"
 APPSTREAM_GZ="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml.gz"
 APPSTREAM_XML="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml"
+MEDIA_DIR="$HOME/.local/share/mirror-os/media"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,9 +51,11 @@ case "$SOURCE" in
     *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
 esac
 
-# ── Ensure DB directory exists ───────────────────────────────────────────────
+# ── Ensure directories exist ─────────────────────────────────────────────────
 
 mkdir -p "$(dirname "$CATALOG_DB")"
+mkdir -p "$MEDIA_DIR/icons"
+mkdir -p "$MEDIA_DIR/screenshots"
 
 # ── Flatpak catalog update ───────────────────────────────────────────────────
 
@@ -70,14 +73,19 @@ update_flatpak() {
         return 1
     fi
 
-    python3 - "$CATALOG_DB" "$appstream_path" << 'PYEOF'
-import sys, os, gzip, json, sqlite3, re
+    python3 - "$CATALOG_DB" "$appstream_path" "$MEDIA_DIR" << 'PYEOF'
+import sys, os, gzip, json, sqlite3, re, shutil
+import urllib.request
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import xml.etree.ElementTree as ET
 
 db_path      = sys.argv[1]
 appstream    = sys.argv[2]
+media_dir    = sys.argv[3]
+icons_dir    = os.path.join(media_dir, 'icons')
+ss_base_dir  = os.path.join(media_dir, 'screenshots')
+FLATPAK_ICON_DIR = "/var/lib/flatpak/appstream/flathub/x86_64/active/icons"
 
 # ── HTML tag stripper ──────────────────────────────────────────────────────
 class TagStripper(HTMLParser):
@@ -196,21 +204,82 @@ for comp in root.iter('component'):
                 icon_name = re.sub(r'\.(png|svg|xpm)$', '', icon_name, flags=re.IGNORECASE)
                 best_size = sz
 
-    # Screenshots (source images only)
-    screenshots = []
+    # Resolve icon to local path
+    icon_local_path = ''
+    if icon_name:
+        dst_icon = os.path.join(icons_dir, f'{app_id}.png')
+        if os.path.isfile(dst_icon) and os.path.getsize(dst_icon) > 0:
+            icon_local_path = dst_icon
+        else:
+            # 1. Copy from flatpak's pre-cached icon dir
+            for size in ('128x128', '64x64', '128x128@2'):
+                if icon_local_path:
+                    break
+                for ext in ('.png', '.svg', ''):
+                    src = os.path.join(FLATPAK_ICON_DIR, size, f'{icon_name}{ext}')
+                    if os.path.isfile(src):
+                        try:
+                            shutil.copy2(src, dst_icon)
+                            icon_local_path = dst_icon
+                        except Exception:
+                            pass
+                        break
+            # 2. Fallback: download from AppStream remote icon URL
+            if not icon_local_path:
+                for icon_elem in comp.findall("icon[@type='remote']"):
+                    remote_url = (icon_elem.text or '').strip()
+                    if remote_url:
+                        try:
+                            req = urllib.request.Request(
+                                remote_url,
+                                headers={'User-Agent': 'mirror-catalog-update/1.0'},
+                            )
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                data = resp.read()
+                            if data:
+                                with open(dst_icon, 'wb') as f:
+                                    f.write(data)
+                                icon_local_path = dst_icon
+                        except Exception:
+                            pass
+                        break
+
+    # Screenshots (source images only) — download to local cache
+    screenshots_raw = []
     for ss in comp.findall('screenshots/screenshot'):
         caption = elem_text(ss, 'caption')
         for img in ss.findall('image'):
             if img.get('type', 'source') == 'source':
                 url = (img.text or '').strip()
                 if url:
-                    screenshots.append({
+                    screenshots_raw.append({
                         'url':     url,
                         'caption': caption,
                         'width':   int(img.get('width', 0) or 0),
                         'height':  int(img.get('height', 0) or 0),
                     })
                 break  # one source image per screenshot
+
+    screenshots = []
+    if screenshots_raw:
+        ss_dir = os.path.join(ss_base_dir, app_id)
+        os.makedirs(ss_dir, exist_ok=True)
+        for i, ss in enumerate(screenshots_raw):
+            local_path = os.path.join(ss_dir, f'{i}.jpg')
+            if not (os.path.isfile(local_path) and os.path.getsize(local_path) > 0):
+                try:
+                    req = urllib.request.Request(
+                        ss['url'],
+                        headers={'User-Agent': 'mirror-catalog-update/1.0'},
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = resp.read()
+                    if data:
+                        with open(local_path, 'wb') as f:
+                            f.write(data)
+                except Exception:
+                    local_path = ''
+            screenshots.append(dict(ss, local_path=local_path if os.path.isfile(local_path) and os.path.getsize(local_path) > 0 else ''))
 
     # Content rating
     content_rating = oars_rating(comp)
@@ -270,7 +339,7 @@ for comp in root.iter('component'):
         developer, license_, homepage, bugtracker, donation,
         json.dumps(cats), json.dumps(kws), icon_name,
         json.dumps(screenshots), content_rating, flatpak_ref,
-        json.dumps(releases_out), verified, 0,
+        json.dumps(releases_out), verified, 0, icon_local_path,
     ))
 
     fts_rows.append((
@@ -309,7 +378,8 @@ CREATE TABLE IF NOT EXISTS flatpak_apps (
     flatpak_ref       TEXT NOT NULL DEFAULT '',
     releases_json     TEXT NOT NULL DEFAULT '[]',
     verified          INTEGER NOT NULL DEFAULT 0,
-    monthly_downloads INTEGER NOT NULL DEFAULT 0
+    monthly_downloads INTEGER NOT NULL DEFAULT 0,
+    icon_local_path   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS nix_packages (
@@ -351,11 +421,20 @@ CREATE INDEX IF NOT EXISTS idx_app_map_nix     ON app_map(nix_attr);
 
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
+# Migration guard: add new columns to existing DBs
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass  # column already exists
+
 with conn:
     conn.execute("DELETE FROM flatpak_apps")
     conn.executemany("""
         INSERT OR REPLACE INTO flatpak_apps VALUES (
-            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
         )
     """, rows)
 
@@ -453,8 +532,20 @@ for attr, (_, val) in best.items():
     pname = val.get('pname', attr)
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
+    meta  = val.get('meta', {}) if isinstance(val.get('meta'), dict) else {}
+    homepage = meta.get('homepage', val.get('homepage', ''))
+    if isinstance(homepage, list):
+        homepage = homepage[0] if homepage else ''
+    lic_raw = meta.get('license', '')
+    if isinstance(lic_raw, dict):
+        license_ = lic_raw.get('spdxId', lic_raw.get('fullName', ''))
+    elif isinstance(lic_raw, list) and lic_raw:
+        first = lic_raw[0]
+        license_ = first.get('spdxId', first.get('fullName', '')) if isinstance(first, dict) else str(first)
+    else:
+        license_ = str(lic_raw) if lic_raw else ''
 
-    rows.append((attr, pname, ver, desc, '', '', '', '[]'))
+    rows.append((attr, pname, ver, desc, '', homepage, license_, '[]'))
     fts_rows.append(('nix', attr, pname, desc[:200], '', ''))
 
 conn = sqlite3.connect(db_path, timeout=30)
@@ -474,7 +565,8 @@ CREATE TABLE IF NOT EXISTS flatpak_apps (
     keywords TEXT NOT NULL DEFAULT '[]', icon_name TEXT NOT NULL DEFAULT '',
     screenshots TEXT NOT NULL DEFAULT '[]', content_rating TEXT NOT NULL DEFAULT '',
     flatpak_ref TEXT NOT NULL DEFAULT '', releases_json TEXT NOT NULL DEFAULT '[]',
-    verified INTEGER NOT NULL DEFAULT 0, monthly_downloads INTEGER NOT NULL DEFAULT 0
+    verified INTEGER NOT NULL DEFAULT 0, monthly_downloads INTEGER NOT NULL DEFAULT 0,
+    icon_local_path TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS nix_packages (
     attr TEXT PRIMARY KEY, pname TEXT NOT NULL, version TEXT NOT NULL DEFAULT '',
@@ -490,12 +582,25 @@ CREATE VIRTUAL TABLE IF NOT EXISTS catalog_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 1'
 );
 CREATE TABLE IF NOT EXISTS app_map (
-    slug TEXT PRIMARY KEY, flatpak_id TEXT, nix_attr TEXT,
-    display_name TEXT NOT NULL DEFAULT ''
+    slug             TEXT PRIMARY KEY,
+    flatpak_id       TEXT,
+    nix_attr         TEXT,
+    display_name     TEXT NOT NULL DEFAULT '',
+    preferred_source TEXT NOT NULL DEFAULT 'flatpak'
 );
 CREATE INDEX IF NOT EXISTS idx_app_map_flatpak ON app_map(flatpak_id);
 CREATE INDEX IF NOT EXISTS idx_app_map_nix ON app_map(nix_attr);
 """)
+
+# Migration guard
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass
 
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -591,19 +696,30 @@ for slug in sorted(all_slugs):
     fp_id, fp_name = fp_slugs.get(slug, (None, None))
     nix_attr, nix_name = nix_slugs.get(slug, (None, None))
     display_name = fp_name or nix_name or slug
-    map_rows.append((slug, fp_id, nix_attr, display_name))
+    preferred = 'flatpak' if fp_id else 'nix'
+    map_rows.append((slug, fp_id, nix_attr, display_name, preferred))
+
+# ── Migration guard ───────────────────────────────────────────────────────────
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass
 
 # ── Replace app_map ──────────────────────────────────────────────────────────
 with conn:
     conn.execute("DELETE FROM app_map")
     conn.executemany(
-        "INSERT INTO app_map(slug, flatpak_id, nix_attr, display_name) VALUES (?,?,?,?)",
+        "INSERT INTO app_map(slug, flatpak_id, nix_attr, display_name, preferred_source) VALUES (?,?,?,?,?)",
         map_rows,
     )
 
 conn.close()
 
-both  = sum(1 for _, fp, nx, _ in map_rows if fp and nx)
+both  = sum(1 for _, fp, nx, _, _ in map_rows if fp and nx)
 total = len(map_rows)
 print(f"app_map built: {total} slugs ({both} cross-source matches).")
 PYEOF
