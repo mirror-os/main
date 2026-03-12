@@ -136,6 +136,10 @@ for label, value in rows: field(label, value)
 rule()
 print()
 PYEOF
+    # Skip confirmation prompt when called non-interactively (--yes flag)
+    if ${yes:-false}; then
+        return 0
+    fi
     printf "Install? [Y]es  [s]earch again  [n]o: "
     local choice
     read -r choice

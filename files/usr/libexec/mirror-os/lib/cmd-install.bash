@@ -61,17 +61,19 @@ _check_or_switch_existing() {
         return 1
     fi
 
-    # Different source — prompt to switch
+    # Different source — prompt to switch (skip if --yes)
     local old_label new_label
     [ "$existing_src" = "flatpak" ] && old_label="Flatpak" || old_label="Nix"
     [ "$source"       = "flatpak" ] && new_label="Flatpak" || new_label="Nix"
-    printf "'%s' is currently installed via %s. Switch to %s? [y/N] " \
-        "$name" "$old_label" "$new_label"
-    local confirm
-    read -r confirm
-    if ! [[ "$confirm" == [yY] ]]; then
-        echo "Cancelled."
-        return 1
+    if ! ${yes:-false}; then
+        printf "'%s' is currently installed via %s. Switch to %s? [y/N] " \
+            "$name" "$old_label" "$new_label"
+        local confirm
+        read -r confirm
+        if ! [[ "$confirm" == [yY] ]]; then
+            echo "Cancelled."
+            return 1
+        fi
     fi
 
     rm "$new_out_file" 2>/dev/null || true
@@ -84,7 +86,7 @@ cmd_install() {
     need_init
     mkdir -p "$APPS_DIR"
 
-    local force_flatpak=false force_nix=false use_flake=false pick=false
+    local force_flatpak=false force_nix=false use_flake=false pick=false yes=false
     local query="" flake_url="" flake_name="" override_name=""
 
     while [[ $# -gt 0 ]]; do
@@ -94,6 +96,7 @@ cmd_install() {
             --flake)       use_flake=true; flake_url="$2"; flake_name="$3"; shift 3 ;;
             --pick|--interactive) pick=true; shift ;;
             --name)        override_name="$2"; shift 2 ;;
+            --yes|-y)      yes=true; shift ;;
             *)
                 if [ -n "$query" ]; then
                     die "Unexpected argument '${1}'. If the name has spaces, quote it: mirror-os install \"${query} ${1}\""
@@ -312,6 +315,16 @@ _print_auto_selection() {
 
 cmd_uninstall() {
     need_init
+    local yes=false
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=true ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+    set -- "${args[@]+"${args[@]}"}"
+
     local query="${1:-}"
     [ -z "$query" ] && die "Usage: mirror-os uninstall <query>"
     # Strip nixpkgs. prefix (e.g. from nix search output)
@@ -362,9 +375,11 @@ except: print('')
                     | grep -i "$query" | cut -f1 | head -1)
             fi
             if [ -n "$orphan_id" ]; then
-                printf "No mirror-os module found, but '%s' is installed as a user Flatpak.\nRemove it? [y/N] " "$orphan_id"
-                read -r confirm
-                [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+                if ! $yes; then
+                    printf "No mirror-os module found, but '%s' is installed as a user Flatpak.\nRemove it? [y/N] " "$orphan_id"
+                    read -r confirm
+                    [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+                fi
                 flatpak --user uninstall --noninteractive "$orphan_id" >> "$LOG_FILE" 2>&1 && \
                     log "uninstall: orphaned Flatpak '${orphan_id}'" || \
                     echo "Warning: flatpak uninstall failed — try: flatpak --user uninstall ${orphan_id}"
@@ -385,9 +400,11 @@ except: print('')
     local id
     id=$(basename "$out_file" .nix)
 
-    printf "Remove '%s'? [y/N] " "$id"
-    read -r confirm
-    [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+    if ! $yes; then
+        printf "Remove '%s'? [y/N] " "$id"
+        read -r confirm
+        [[ "$confirm" == [yY] ]] || { echo "Cancelled."; exit 0; }
+    fi
 
     # Also remove pro flake input from flake.nix if present
     local input_name="mirror-${id}"
