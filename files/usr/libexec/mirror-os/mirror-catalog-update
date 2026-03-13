@@ -44,12 +44,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --source) SOURCE="$2"; shift 2 ;;
         --no-media) NO_MEDIA=1; shift ;;
-        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|all] [--no-media]" >&2; exit 1 ;;
+        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|nix-meta|all] [--no-media]" >&2; exit 1 ;;
     esac
 done
 
 case "$SOURCE" in
-    flatpak|nix|all) ;;
+    flatpak|nix|nix-meta|all) ;;
     *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
 esac
 
@@ -703,6 +703,178 @@ PYEOF
     fi
 }
 
+# ── Nix metadata enrichment ──────────────────────────────────────────────────
+# Runs batched `nix eval` to pull full meta (longDescription, homepage, license,
+# maintainers) for every package in nix_packages.  Much slower than nix search
+# (~20-40 min on first run) so it runs as a separate step and caches by nixpkgs
+# revision — subsequent calls with the same nixpkgs rev return immediately.
+
+update_nix_meta() {
+    log "Checking Nix metadata enrichment..."
+
+    if ! command -v nix &>/dev/null; then
+        log "Nix not available — skipping Nix metadata enrichment."
+        return 1
+    fi
+
+    # Detect current nixpkgs revision from the flake registry
+    local nixpkgs_rev
+    nixpkgs_rev=$(nix eval --raw --impure --expr '(builtins.getFlake "nixpkgs").rev' 2>/dev/null || echo "")
+    if [ -z "$nixpkgs_rev" ]; then
+        log "Could not determine nixpkgs revision — skipping Nix metadata enrichment."
+        return 1
+    fi
+
+    # Check if we already enriched for this exact revision
+    local stored_rev
+    stored_rev=$(sqlite3 "$CATALOG_DB" \
+        "SELECT updated_at FROM catalog_meta WHERE source='nix-meta'" 2>/dev/null || echo "")
+    if [ "$stored_rev" = "$nixpkgs_rev" ]; then
+        log "Nix metadata already enriched for nixpkgs rev ${nixpkgs_rev:0:12} — skipping."
+        return 0
+    fi
+
+    log "Enriching Nix package metadata for nixpkgs rev ${nixpkgs_rev:0:12}..."
+    log "This may take 20-40 min on first run or after a nixpkgs update."
+
+    python3 - "$CATALOG_DB" "$nixpkgs_rev" << 'PYEOF'
+import sys, json, sqlite3, subprocess, time
+from datetime import datetime, timezone
+
+db_path      = sys.argv[1]
+nixpkgs_rev  = sys.argv[2]
+
+conn = sqlite3.connect(db_path, timeout=60)
+
+# Migration guard — add nix-meta row to catalog_meta if missing
+try:
+    conn.execute("INSERT OR IGNORE INTO catalog_meta(source, updated_at, row_count) VALUES ('nix-meta', '', 0)")
+    conn.commit()
+except Exception:
+    pass
+
+attrs = [row[0] for row in conn.execute("SELECT attr FROM nix_packages").fetchall()]
+total = len(attrs)
+print(f"Enriching metadata for {total} Nix packages in chunks of 200...", flush=True)
+
+CHUNK   = 200
+TIMEOUT = 180  # seconds per chunk
+
+total_updated = 0
+t_start = time.monotonic()
+n_chunks = (total + CHUNK - 1) // CHUNK
+
+for ci, chunk_start in enumerate(range(0, total, CHUNK), 1):
+    chunk = attrs[chunk_start:chunk_start + CHUNK]
+
+    # Build a safe Nix list literal — attrs are identifiers (alnum + - _)
+    attrs_nix = ' '.join(f'"{a}"' for a in chunk)
+
+    expr = r"""
+let
+  nixpkgs = builtins.getFlake "nixpkgs";
+  pkgs    = nixpkgs.legacyPackages.x86_64-linux;
+  attrs   = [ """ + attrs_nix + r""" ];
+  wanted  = builtins.listToAttrs (map (n: { name = n; value = null; }) attrs);
+  subset  = builtins.intersectAttrs wanted pkgs;
+in
+builtins.mapAttrs (name: pkg:
+  let
+    r = builtins.tryEval (
+      let m = pkg.meta or {}; in {
+        longDesc = m.longDescription or "";
+        homepage = let h = m.homepage or ""; in
+          if builtins.isList h
+          then (if h == [] then "" else builtins.head h)
+          else h;
+        license =
+          let l = m.license or null; in
+          if l == null then ""
+          else if builtins.isAttrs l
+               then l.spdxId or (l.fullName or "")
+          else if builtins.isList l && l != []
+               then (let f = builtins.head l; in
+                     if builtins.isAttrs f
+                     then f.spdxId or (f.fullName or "")
+                     else "")
+          else "";
+        maintainers = map
+          (mm: let gh = mm.github or ""; nm = mm.name or ""; in
+               if gh != "" then gh else nm)
+          (m.maintainers or []);
+      }
+    );
+  in
+  if r.success then r.value else {}
+) subset
+"""
+
+    elapsed = time.monotonic() - t_start
+    print(f"  Chunk {ci}/{n_chunks} ({len(chunk)} pkgs, {elapsed:.0f}s elapsed)...", flush=True)
+    t_chunk = time.monotonic()
+
+    try:
+        result = subprocess.run(
+            ["nix", "eval", "--json", "--impure", "--expr", expr],
+            capture_output=True, text=True, timeout=TIMEOUT,
+        )
+        if result.returncode != 0:
+            snippet = result.stderr.strip()[:300]
+            print(f"    nix eval failed for chunk {ci}: {snippet}", flush=True)
+            continue
+
+        data = json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        print(f"    Chunk {ci} timed out after {TIMEOUT}s — skipping", flush=True)
+        continue
+    except Exception as e:
+        print(f"    Chunk {ci} error: {e}", flush=True)
+        continue
+
+    updated = 0
+    with conn:
+        for attr, meta in data.items():
+            if not meta:
+                continue
+            ld  = meta.get('longDesc', '')
+            hp  = meta.get('homepage', '')
+            lic = meta.get('license', '')
+            mts = json.dumps([m for m in meta.get('maintainers', []) if m])
+
+            conn.execute("""
+                UPDATE nix_packages SET
+                  long_description = CASE WHEN :ld  != ''   THEN :ld  ELSE long_description END,
+                  homepage         = CASE WHEN :hp  != ''   THEN :hp  ELSE homepage         END,
+                  license          = CASE WHEN :lic != ''   THEN :lic ELSE license          END,
+                  maintainers      = CASE WHEN :mts != '[]' THEN :mts ELSE maintainers      END
+                WHERE attr = :attr
+            """, {'ld': ld, 'hp': hp, 'lic': lic, 'mts': mts, 'attr': attr})
+            updated += 1
+
+    total_updated += updated
+    print(f"    {updated} updated in {time.monotonic()-t_chunk:.1f}s", flush=True)
+
+# Record the nixpkgs rev so we skip on next run if nothing changed
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+with conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count) VALUES ('nix-meta', ?, ?)",
+        (nixpkgs_rev, total_updated),
+    )
+conn.close()
+
+elapsed_total = time.monotonic() - t_start
+print(f"Nix metadata enrichment complete: {total_updated} packages enriched in {elapsed_total:.1f}s.")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "Nix metadata enrichment complete."
+    else
+        log "Nix metadata enrichment failed (exit $rc)."
+        return $rc
+    fi
+}
+
 # ── Cross-source app_map builder ─────────────────────────────────────────────
 
 build_app_map() {
@@ -819,12 +991,17 @@ case "$SOURCE" in
         build_app_map
         ;;
     nix)
-        update_nix || true
+        update_nix      || true
+        update_nix_meta || true
         build_app_map
         ;;
+    nix-meta)
+        update_nix_meta || true
+        ;;
     all)
-        update_flatpak || true
-        update_nix     || true
+        update_flatpak  || true
+        update_nix      || true
+        update_nix_meta || true
         build_app_map
         ;;
 esac
