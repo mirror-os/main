@@ -725,6 +725,12 @@ def flatpak_slug(app_id):
     if parts and parts[0] in KNOWN_HOSTS:             parts = parts[1:]
     if len(parts) > 1 and parts[0] in KNOWN_ORGS:    parts = parts[1:]
     while len(parts) > 1 and parts[-1] in TRAIL_SFXS: parts = parts[:-1]
+    # Deduplicate consecutive identical parts so com.slack.Slack → 'slack', not 'slack-slack'
+    deduped = [parts[0]] if parts else []
+    for p in parts[1:]:
+        if p != deduped[-1]:
+            deduped.append(p)
+    parts = deduped
     slug = '-'.join(parts)
     slug = re.sub(r'[^a-z0-9-]', '-', slug)
     slug = re.sub(r'-+', '-', slug).strip('-')
