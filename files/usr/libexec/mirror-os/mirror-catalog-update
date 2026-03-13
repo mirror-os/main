@@ -777,35 +777,45 @@ let
   attrs   = [ """ + attrs_nix + r""" ];
   wanted  = builtins.listToAttrs (map (n: { name = n; value = null; }) attrs);
   subset  = builtins.intersectAttrs wanted pkgs;
+  # safe: evaluate thunk, return default on any error
+  safe = thunk: default:
+    let r = builtins.tryEval thunk; in
+    if r.success then r.value else default;
 in
 builtins.mapAttrs (name: pkg:
   let
-    r = builtins.tryEval (
-      let m = pkg.meta or {}; in {
-        longDesc = m.longDescription or "";
-        homepage = let h = m.homepage or ""; in
-          if builtins.isList h
-          then (if h == [] then "" else builtins.head h)
-          else h;
-        license =
-          let l = m.license or null; in
-          if l == null then ""
-          else if builtins.isAttrs l
-               then l.spdxId or (l.fullName or "")
-          else if builtins.isList l && l != []
-               then (let f = builtins.head l; in
-                     if builtins.isAttrs f
-                     then f.spdxId or (f.fullName or "")
-                     else "")
-          else "";
-        maintainers = map
-          (mm: let gh = mm.github or ""; nm = mm.name or ""; in
-               if gh != "" then gh else nm)
-          (m.maintainers or []);
-      }
-    );
+    # Safely access pkg.meta — some packages throw on .meta itself
+    m_r = builtins.tryEval (pkg.meta or {});
+    m   = if m_r.success && builtins.isAttrs m_r.value then m_r.value else {};
+
+    longDesc = safe (m.longDescription or "") "";
+
+    hp_raw   = safe (m.homepage or "") "";
+    homepage = if builtins.isList hp_raw
+               then (if hp_raw == [] then "" else safe (builtins.head hp_raw) "")
+               else hp_raw;
+
+    lic_raw  = safe (m.license or null) null;
+    license  =
+      if lic_raw == null then ""
+      else if builtins.isAttrs lic_raw
+           then safe (lic_raw.spdxId or (lic_raw.fullName or "")) ""
+      else if builtins.isList lic_raw && lic_raw != []
+           then (let f = safe (builtins.head lic_raw) null; in
+                 if f != null && builtins.isAttrs f
+                 then safe (f.spdxId or (f.fullName or "")) ""
+                 else "")
+      else "";
+
+    mts_raw     = safe (m.maintainers or []) [];
+    maintainers = map
+      (mm:
+        let gh = safe (mm.github or "") "";
+            nm = safe (mm.name   or "") "";
+        in if gh != "" then gh else nm)
+      (if builtins.isList mts_raw then mts_raw else []);
   in
-  if r.success then r.value else {}
+  { inherit longDesc homepage license maintainers; }
 ) subset
 """
 
