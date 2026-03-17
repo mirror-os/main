@@ -1,6 +1,6 @@
 [
     "app.zen_browser.zen",
     "com.system76.CosmicFiles",
-    "com.system76.CosmicStore",
+    "mirror-software-center",
     "com.system76.CosmicSettings",
 ]
