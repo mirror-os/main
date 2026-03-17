@@ -206,3 +206,20 @@ cmd_remove_option() {
     echo "Removed option '${key}' from ${app_id}."
     trigger_switch "mirror-os: configure ${app_id} (remove ${key})"
 }
+
+# Apply options from the sidecar JSON to a programs module, then run HM switch.
+# Called by: mirror-os --app <id> --apply-options
+cmd_apply_options() {
+    need_init
+    local app_id="${1:-}"
+    [ -z "$app_id" ] && die "Usage: mirror-os --app <id> --apply-options"
+
+    local out_file
+    out_file=$(module_file "$app_id")
+    [ -f "$out_file" ] || die "App '${app_id}' not found. Use 'mirror-os list' to see installed apps."
+
+    regenerate_module_from_sidecar "$app_id"
+    log "apply-options: '${app_id}'"
+    echo "Configuration applied for ${app_id}."
+    trigger_switch "mirror-os: configure ${app_id}"
+}

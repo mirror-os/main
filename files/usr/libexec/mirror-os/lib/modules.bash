@@ -30,6 +30,111 @@ write_nix_module() {
 EOF
 }
 
+# Look up programs_name for a nix attr in programs-map.toml.
+# Prints the programs_name (e.g. "git") or nothing if not mapped.
+_lookup_programs_name() {
+    local attr="$1"
+    local map_file="/usr/share/mirror-os/programs-map.toml"
+    [ -f "$map_file" ] || return 0
+    python3 - "$map_file" "$attr" << 'PYEOF'
+import sys, tomllib
+map_file, attr = sys.argv[1], sys.argv[2]
+with open(map_file, "rb") as f:
+    data = tomllib.load(f)
+for entry in data.get("program", []):
+    if entry.get("attr") == attr:
+        print(entry.get("programs_name", ""))
+        break
+PYEOF
+}
+
+# Write a Home Manager programs.<name> module, optionally hydrating options
+# from a sidecar JSON file.
+# $1 = attr (used in comments and for sidecar lookup)
+# $2 = programs_name (HM programs key, e.g. "git")
+# $3 = sidecar_file (path to .options.json, or "" to skip)
+# $4 = out_file
+write_programs_module() {
+    local attr="$1" programs_name="$2" sidecar_file="$3" out_file="$4"
+
+    # Build the options block from the sidecar JSON if provided and non-empty.
+    local options_block=""
+    if [ -n "$sidecar_file" ] && [ -f "$sidecar_file" ]; then
+        options_block=$(python3 - "$sidecar_file" "$programs_name" << 'PYEOF'
+import sys, json
+
+sidecar_file, programs_name = sys.argv[1], sys.argv[2]
+with open(sidecar_file) as f:
+    opts = json.load(f)
+
+def nix_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        items = " ".join('"' + str(i).replace('\\', '\\\\').replace('"', '\\"') + '"' for i in v)
+        return f"[ {items} ]"
+    # string / path
+    escaped = str(v).replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+lines = []
+for key, val in opts.items():
+    # Handle nested dot-notation keys like "signing.key"
+    parts = key.split(".")
+    if len(parts) == 1:
+        lines.append(f"  programs.{programs_name}.{key} = {nix_value(val)};")
+    else:
+        # Emit as nested attr set
+        inner = ".".join(parts[1:])
+        lines.append(f"  programs.{programs_name}.{parts[0]}.{inner} = {nix_value(val)};")
+
+print("\n".join(lines))
+PYEOF
+)
+    fi
+
+    {
+        echo "# ${attr} — installed via mirror-os"
+        echo "# To remove: mirror-os uninstall ${attr}"
+        echo "{ ... }: {"
+        echo "  programs.${programs_name}.enable = true;"
+        if [ -n "$options_block" ]; then
+            echo "$options_block"
+        fi
+        echo "}"
+    } > "$out_file"
+}
+
+# Regenerate a .nix module for attr from its sidecar JSON (if any).
+# Detects whether the current module uses programs or home.packages format
+# and regenerates accordingly.
+# $1 = attr
+regenerate_module_from_sidecar() {
+    local attr="$1"
+    local apps_dir="${HOME}/.config/home-manager/apps"
+    local module_file="${apps_dir}/${attr}.nix"
+    local sidecar_file="${apps_dir}/${attr}.options.json"
+
+    [ -f "$module_file" ] || die "No module file found for '${attr}' at ${module_file}"
+
+    # Detect format
+    if grep -q "programs\." "$module_file" 2>/dev/null; then
+        local programs_name
+        programs_name=$(_lookup_programs_name "$attr")
+        if [ -z "$programs_name" ]; then
+            # Fall back to using attr as programs name if somehow we got here
+            programs_name="$attr"
+        fi
+        write_programs_module "$attr" "$programs_name" "$sidecar_file" "$module_file"
+        log "regenerated programs module for '${attr}'"
+    else
+        # home.packages format — just keep it, options don't apply here
+        log "regenerate_module_from_sidecar: '${attr}' uses home.packages format, nothing to regenerate"
+    fi
+}
+
 write_pro_flake_module() {
     local input_name="$1" module_name="$2" out_file="$3"
     cat > "$out_file" << EOF

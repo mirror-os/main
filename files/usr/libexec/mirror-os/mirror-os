@@ -20,6 +20,7 @@
 #   mirror-os --app <id> --remove-option <key>
 #   mirror-os --app <id> --show-config
 #   mirror-os --app <id> --edit
+#   mirror-os --app <id> --apply-options
 
 set -uo pipefail
 
@@ -84,6 +85,7 @@ Usage:
   mirror-os --app <id> --remove-option <key>        Remove a Nix option from an app
   mirror-os --app <id> --show-config               Print the app's .nix module
   mirror-os --app <id> --edit                      Open the app's .nix in $EDITOR
+  mirror-os --app <id> --apply-options             Apply options from sidecar JSON and switch
 
 Global flags (work with any command):
   --log                                            Print diagnostic log output to the terminal
@@ -157,7 +159,9 @@ case "${1:-}" in
                 [ -f "$f" ] || die "App '${app_id}' not found. Use 'mirror-os list'."
                 ${EDITOR:-nano} "$f"
                 trigger_switch "mirror-os: edit ${app_id}" ;;
-            *) die "Unknown option for --app: ${1:-}. Options: --add-option, --remove-option, --show-config, --edit" ;;
+            --apply-options)
+                shift; cmd_apply_options "$app_id" ;;
+            *) die "Unknown option for --app: ${1:-}. Options: --add-option, --remove-option, --show-config, --edit, --apply-options" ;;
         esac
         ;;
     help|--help|-h) usage ;;

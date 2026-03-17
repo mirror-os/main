@@ -80,6 +80,20 @@ _check_or_switch_existing() {
     return 0
 }
 
+# Write the right module format for a Nix attr: programs module if mapped, else home.packages.
+# $1 = attr, $2 = display_name, $3 = out_file
+_write_nix_module_smart() {
+    local attr="$1" display_name="$2" out_file="$3"
+    local programs_name
+    programs_name=$(_lookup_programs_name "$attr")
+    if [ -n "$programs_name" ]; then
+        write_programs_module "$attr" "$programs_name" "" "$out_file"
+        log "install: using programs.${programs_name} module for '${attr}'"
+    else
+        write_nix_module "$attr" "$display_name" "$out_file"
+    fi
+}
+
 # ── cmd_install ──────────────────────────────────────────────────────────────
 
 cmd_install() {
@@ -212,7 +226,7 @@ PYEOF
             out_file=$(module_file "$canonical_id")
             _check_or_switch_existing "$canonical_id" "nix" "$name" "$out_file" || return
             _confirm_install "$query" "Nix" "$query" || return
-            write_nix_module "$query" "$name" "$out_file"
+            _write_nix_module_smart "$query" "$name" "$out_file"
             log "install: Nix '${name}' (nixpkgs.${query}) [direct]"
             echo "Installed Nix package: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (nixpkgs.${query}) [Nix]"
@@ -242,7 +256,7 @@ PYEOF
         out_file=$(module_file "$canonical_id")
         _check_or_switch_existing "$canonical_id" "nix" "$name" "$out_file" || return
         _confirm_install "$id" "Nix" "$query" || return
-        write_nix_module "$id" "$name" "$out_file"
+        _write_nix_module_smart "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
@@ -288,7 +302,7 @@ PYEOF
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
     else
-        write_nix_module "$id" "$name" "$out_file"
+        _write_nix_module_smart "$id" "$name" "$out_file"
         log "install: Nix '${name}' (nixpkgs.${id})"
         echo "Installed Nix package: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (nixpkgs.${id}) [Nix]"
@@ -422,6 +436,9 @@ except: print('')
     fi
 
     rm "$out_file"
+    # Remove options sidecar if present
+    local sidecar_file="${APPS_DIR}/${id}.options.json"
+    [ -f "$sidecar_file" ] && rm "$sidecar_file"
     log "uninstall: '${id}'"
     echo "Uninstalled: ${id}"
     trigger_switch "mirror-os: uninstall ${id}"

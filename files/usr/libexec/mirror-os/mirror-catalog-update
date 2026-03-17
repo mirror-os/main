@@ -354,7 +354,8 @@ CREATE TABLE IF NOT EXISTS nix_packages (
     attr TEXT PRIMARY KEY, pname TEXT NOT NULL,
     version TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
     long_description TEXT NOT NULL DEFAULT '', homepage TEXT NOT NULL DEFAULT '',
-    license TEXT NOT NULL DEFAULT '', maintainers TEXT NOT NULL DEFAULT '[]'
+    license TEXT NOT NULL DEFAULT '', maintainers TEXT NOT NULL DEFAULT '[]',
+    programs_name TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS catalog_meta (
     source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
@@ -375,6 +376,7 @@ for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE nix_packages ADD COLUMN programs_name TEXT NOT NULL DEFAULT ''",
 ]:
     try:
         conn.execute(col_def)
@@ -596,6 +598,19 @@ for key, val in data.items():
 
 rows     = []
 fts_rows = []
+
+# Load programs-map.toml for programs_name lookup
+_programs_map = {}
+_programs_map_path = '/usr/share/mirror-os/programs-map.toml'
+try:
+    import tomllib
+    with open(_programs_map_path, 'rb') as _f:
+        _pm_data = tomllib.load(_f)
+    for _entry in _pm_data.get('program', []):
+        _programs_map[_entry['attr']] = _entry.get('programs_name', '')
+except Exception:
+    pass
+
 for attr, (_, val) in best.items():
     pname = val.get('pname', attr)
     ver   = val.get('version', '')
@@ -612,8 +627,9 @@ for attr, (_, val) in best.items():
         license_ = first.get('spdxId', first.get('fullName', '')) if isinstance(first, dict) else str(first)
     else:
         license_ = str(lic_raw) if lic_raw else ''
+    programs_name = _programs_map.get(attr, '')
 
-    rows.append((attr, pname, ver, desc, '', homepage, license_, '[]'))
+    rows.append((attr, pname, ver, desc, '', homepage, license_, '[]', programs_name))
     fts_rows.append(('nix', attr, pname, desc[:200], '', ''))
 
 conn = sqlite3.connect(db_path, timeout=30)
@@ -640,7 +656,7 @@ CREATE TABLE IF NOT EXISTS nix_packages (
     attr TEXT PRIMARY KEY, pname TEXT NOT NULL, version TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '', long_description TEXT NOT NULL DEFAULT '',
     homepage TEXT NOT NULL DEFAULT '', license TEXT NOT NULL DEFAULT '',
-    maintainers TEXT NOT NULL DEFAULT '[]'
+    maintainers TEXT NOT NULL DEFAULT '[]', programs_name TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS catalog_meta (
     source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
@@ -677,7 +693,7 @@ now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 with conn:
     conn.execute("DELETE FROM nix_packages")
     conn.executemany(
-        "INSERT OR REPLACE INTO nix_packages VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO nix_packages VALUES (?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.execute("DELETE FROM catalog_fts WHERE source='nix'")

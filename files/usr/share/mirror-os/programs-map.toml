@@ -1,0 +1,101 @@
+# Mirror OS programs map
+#
+# Maps nixpkgs attribute names to Home Manager programs.<name> modules.
+# Used by mirror-os install (to generate programs.X.enable = true modules)
+# and by the Mirror OS Software Center (to show all configuration options in the UI).
+
+[[program]]
+attr = "git"
+programs_name = "git"
+
+[[program]]
+attr = "neovim"
+programs_name = "neovim"
+
+[[program]]
+attr = "vim"
+programs_name = "vim"
+
+[[program]]
+attr = "zsh"
+programs_name = "zsh"
+
+[[program]]
+attr = "fish"
+programs_name = "fish"
+
+[[program]]
+attr = "bash"
+programs_name = "bash"
+
+[[program]]
+attr = "starship"
+programs_name = "starship"
+
+[[program]]
+attr = "direnv"
+programs_name = "direnv"
+
+[[program]]
+attr = "fzf"
+programs_name = "fzf"
+
+[[program]]
+attr = "gh"
+programs_name = "gh"
+
+[[program]]
+attr = "gpg"
+programs_name = "gpg"
+
+[[program]]
+attr = "ssh"
+programs_name = "ssh"
+
+[[program]]
+attr = "tmux"
+programs_name = "tmux"
+
+[[program]]
+attr = "htop"
+programs_name = "htop"
+
+[[program]]
+attr = "bat"
+programs_name = "bat"
+
+[[program]]
+attr = "eza"
+programs_name = "eza"
+
+[[program]]
+attr = "ripgrep"
+programs_name = "ripgrep"
+
+[[program]]
+attr = "zoxide"
+programs_name = "zoxide"
+
+[[program]]
+attr = "atuin"
+programs_name = "atuin"
+
+[[program]]
+attr = "yazi"
+programs_name = "yazi"
+
+[[program]]
+attr = "alacritty"
+programs_name = "alacritty"
+
+[[program]]
+attr = "kitty"
+programs_name = "kitty"
+
+[[program]]
+attr = "vscode"
+programs_name = "vscode"
+
+[[program]]
+attr = "firefox"
+programs_name = "firefox"
