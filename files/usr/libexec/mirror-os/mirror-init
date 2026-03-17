@@ -55,7 +55,22 @@ fi
 
 notify "Setting up Mirror OS…" "First-time setup is running in the background. This may take a few minutes." "system-software-install"
 
-# ── Step 2: Set zsh as the default login shell ─────────────────────────────
+# ── Step 2: Set default hostname ───────────────────────────────────────────
+# Set hostname to "mirror-os" on first boot if no static hostname is configured.
+# Without this, systemd picks up the IPv6 RDNS from DHCPv6 and sets a transient
+# hostname like "dynamic-2a02-…" which persists across the session.
+if [ -z "$(cat /etc/hostname 2>/dev/null | tr -d '[:space:]')" ]; then
+    log "Setting hostname to mirror-os..."
+    if sudo /usr/bin/hostnamectl set-hostname mirror-os; then
+        log "Hostname set to mirror-os"
+    else
+        log "WARNING: Could not set hostname — run manually: sudo hostnamectl set-hostname mirror-os"
+    fi
+else
+    log "Hostname already set: $(cat /etc/hostname)"
+fi
+
+# ── Step 4: Set zsh as the default login shell ─────────────────────────────
 # /usr/bin/zsh is baked into the image.  The sudoers drop-in at
 # /etc/sudoers.d/mirror-os-chsh grants passwordless usermod -s for wheel
 # users so this runs non-interactively inside the user service.
@@ -72,7 +87,7 @@ else
     log "Default shell is already zsh"
 fi
 
-# ── Step 3: Install Nix if missing ─────────────────────────────────────────
+# ── Step 5: Install Nix if missing ─────────────────────────────────────────
 if ! command -v nix &>/dev/null; then
     log "Installing Nix (Determinate Systems)..."
     notify "Installing Nix…" "Downloading the Nix package manager. This is the longest step." "system-software-install"
@@ -99,7 +114,7 @@ for i in $(seq 1 30); do
 done
 nix store info &>/dev/null || die "Nix daemon not responding after 60s"
 
-# ── Step 4: Pre-populate COSMIC config from system defaults ────────────────
+# ── Step 6: Pre-populate COSMIC config from system defaults ────────────────
 # mirror-os-init now starts after graphical-session.target so COSMIC is
 # already running; this guard still protects against missing config on any
 # re-run (e.g. after mirror-dev-reset --cosmic).
@@ -109,7 +124,7 @@ if [ ! -d "/var/home/$USER/.config/cosmic" ]; then
     log "COSMIC config initialised"
 fi
 
-# ── Step 5: Set global git identity ────────────────────────────────────────
+# ── Step 7: Set global git identity ────────────────────────────────────────
 # Ensures git commits (state repo, home-manager repo) work without user
 # interaction. Only set if the user has not already configured git.
 if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
@@ -118,7 +133,7 @@ if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
     log "Set global git identity: $USER <$USER@mirror-os.local>"
 fi
 
-# ── Step 6: Scaffold home-manager config ───────────────────────────────────
+# ── Step 8: Scaffold home-manager config ───────────────────────────────────
 # home.nix is NOT scaffolded — it lives read-only at /usr/share/mirror-os/home.nix
 # and is imported directly by flake.nix.  Only flake.nix and home-user.nix are
 # user-owned files that need to be scaffolded once.
@@ -139,7 +154,7 @@ else
     mkdir -p "$HM_CONFIG_DIR/apps"
 fi
 
-# ── Step 7: Ensure HM config dir is a git repo with all files tracked ──────
+# ── Step 9: Ensure HM config dir is a git repo with all files tracked ──────
 # Nix flake evaluation only sees files that git knows about (committed or
 # staged). If the directory is not a repo yet, or files were generated without
 # being staged, the switch at step 8 would fail with "path does not exist in
@@ -155,7 +170,7 @@ git -C "$HM_CONFIG_DIR" \
     commit -m "init: scaffold from image templates $(date '+%Y-%m-%d')" -q \
     2>/dev/null || true
 
-# ── Step 8: Initialise state git repo ──────────────────────────────────────
+# ── Step 10: Initialise state git repo ──────────────────────────────────────
 if [ ! -d "$STATE_DIR/.git" ]; then
     log "Initialising state git repository..."
     git -C "$STATE_DIR" init -q
@@ -163,7 +178,7 @@ if [ ! -d "$STATE_DIR/.git" ]; then
     git -C "$STATE_DIR" config user.email "$USER@mirror-os.local"
 fi
 
-# ── Step 9: Set up user-scope Flatpak remote ───────────────────────────────
+# ── Step 11: Set up user-scope Flatpak remote ───────────────────────────────
 # nix-flatpak installs user-selected apps at user scope (flatpak --user).
 # The system-scope flathub remote (used by managed-apps.list) is a separate
 # Flatpak installation and is not available to user-scope installs.
@@ -177,7 +192,7 @@ else
     log "WARNING: Could not add user-scope flathub remote — user Flatpak installs may fail"
 fi
 
-# ── Step 10: First home-manager switch ─────────────────────────────────────
+# ── Step 12: First home-manager switch ─────────────────────────────────────
 # nix-flatpak applies global Flatpak overrides (GTK/icon theme) as part of
 # this switch. Default apps are managed by mirror-os-flatpak-init.service, not nix-flatpak.
 log "Running home-manager switch (first run may take a while)..."
@@ -192,7 +207,7 @@ else
     log "WARNING: home-manager switch failed — will retry on next sync. Check $LOG"
 fi
 
-# ── Step 11: Initial state git commit ─────────────────────────────────────
+# ── Step 13: Initial state git commit ─────────────────────────────────────
 mkdir -p "$STATE_DIR/home-manager"
 cp -r "$HM_CONFIG_DIR/." "$STATE_DIR/home-manager/" 2>/dev/null || true
 flatpak list --app --columns=application,version 2>/dev/null > "$STATE_DIR/flatpak-state.list"

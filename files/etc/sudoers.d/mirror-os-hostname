@@ -1,0 +1,5 @@
+# Allow wheel group members to set the system hostname without a password.
+# This lets mirror-init set "mirror-os" as the default hostname on first boot
+# when no static hostname has been configured.
+# Scoped to the exact hostnamectl invocation used by mirror-init.
+%wheel ALL=(root) NOPASSWD: /usr/bin/hostnamectl set-hostname mirror-os
