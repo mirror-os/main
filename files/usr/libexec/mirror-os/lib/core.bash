@@ -52,9 +52,16 @@ trigger_switch() {
         log "home-manager switch succeeded"
     else
         log "WARNING: home-manager switch failed"
-        # Extract Nix/HM error lines (error: header + up to 2 lines of context each).
-        local hm_errors
-        hm_errors=$(grep -A2 "^error:" "$hm_out" 2>/dev/null | grep -v "^--$" | head -10 || true)
+        # Extract Nix/HM error: find the first "error:" line and capture the full chain
+        # from there (root cause → context → derivationStrict at the bottom).
+        # Showing from the first error line ensures the root cause is always visible.
+        local hm_errors first_error_line
+        first_error_line=$(grep -n "^error:" "$hm_out" 2>/dev/null | head -1 | cut -d: -f1 || true)
+        if [ -n "$first_error_line" ]; then
+            hm_errors=$(tail -n "+${first_error_line}" "$hm_out" 2>/dev/null | head -25 || true)
+        else
+            hm_errors=$(tail -15 "$hm_out" 2>/dev/null || true)
+        fi
         rm -f "$hm_out"
         if [ -n "$hm_errors" ]; then
             if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
