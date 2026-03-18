@@ -70,6 +70,12 @@ with open(sidecar_file) as f:
 def nix_value(v):
     if isinstance(v, bool):
         return "true" if v else "false"
+    # Coerce string "true"/"false" to Nix booleans.
+    # Sidecars written by older software center versions store booleans as strings.
+    if v == "true":
+        return "true"
+    if v == "false":
+        return "false"
     if isinstance(v, (int, float)):
         return str(v)
     if isinstance(v, list):
