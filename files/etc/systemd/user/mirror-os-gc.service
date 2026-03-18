@@ -1,0 +1,9 @@
+[Unit]
+Description=Mirror OS Nix garbage collection
+After=mirror-os-init.service
+ConditionPathExists=%h/.local/share/mirror-os/.init-complete
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'home-manager --impure expire-generations "--older-than 10d" && nix-collect-garbage --delete-older-than 10d'
+TimeoutStartSec=15min

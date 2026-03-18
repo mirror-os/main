@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS daily Nix environment update
+After=network-online.target mirror-os-init.service
+Requires=network-online.target
+ConditionPathExists=%h/.local/share/mirror-os/.init-complete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mirror-os update
+TimeoutStartSec=30min

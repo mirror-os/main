@@ -445,15 +445,11 @@ except: print('')
     echo "Uninstalled: ${id}"
     trigger_switch "mirror-os: uninstall ${id}"
 
-    # Post-switch cleanup: ensure the app is actually gone.
+    # Post-switch cleanup for Flatpaks: nix-flatpak's activation runs as a background
+    # systemd service (async), so call flatpak directly to ensure the app disappears
+    # from the launcher before this command returns.
     if $is_flatpak && [ -n "$flatpak_app_id" ]; then
-        # nix-flatpak's activation runs a background service; call flatpak directly
-        # so the app disappears from the launcher before this command returns.
         echo "Removing Flatpak installation..."
         flatpak --user uninstall --noninteractive "$flatpak_app_id" 2>/dev/null || true
-    else
-        # Expire old Home Manager generations and collect freed Nix store paths.
-        echo "Running Nix garbage collection (this may take a moment)..."
-        nix-collect-garbage -d >> "$LOG_FILE" 2>&1 || true
     fi
 }

@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS Nix garbage collection timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

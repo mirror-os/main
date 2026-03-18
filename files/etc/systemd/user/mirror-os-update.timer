@@ -1,0 +1,10 @@
+[Unit]
+Description=Mirror OS daily Nix environment update timer
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
