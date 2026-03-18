@@ -34,40 +34,49 @@ trigger_switch() {
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
+    # Capture HM output in a temp file for error extraction in both modes.
+    local hm_out
+    hm_out=$(mktemp)
     if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
-        # Stream mode: tee HM output to both stdout (for caller progress tracking)
-        # and the log file.  PIPESTATUS[0] captures home-manager's exit code.
-        home-manager switch --flake ".#$USER" --impure 2>&1 | tee -a "$LOG_FILE"
-        local hm_status=${PIPESTATUS[0]}
-        if [ "$hm_status" -eq 0 ]; then
-            echo "Done."
-            log "home-manager switch succeeded"
-        else
-            log "WARNING: home-manager switch failed"
-            local last_err
-            last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
-            [ -n "$last_err" ] && echo "$last_err" >&2
-            if $made_commit; then
-                git -C "$HM_CONFIG_DIR" reset --hard HEAD~1 2>/dev/null || \
-                    log "WARNING: could not undo HM config commit after switch failure"
-            fi
-            die "home-manager switch failed — check $LOG_FILE"
-        fi
+        # Stream mode: tee to stdout (progress tracking), log file, and temp file.
+        home-manager switch --flake ".#$USER" --impure 2>&1 | tee -a "$LOG_FILE" "$hm_out"
     else
-        if home-manager switch --flake ".#$USER" --impure >> "$LOG_FILE" 2>&1; then
-            echo "Done."
-            log "home-manager switch succeeded"
-        else
-            log "WARNING: home-manager switch failed"
-            local last_err
-            last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
-            [ -n "$last_err" ] && echo "$last_err" >&2
-            if $made_commit; then
-                git -C "$HM_CONFIG_DIR" reset --hard HEAD~1 2>/dev/null || \
-                    log "WARNING: could not undo HM config commit after switch failure"
+        # Normal mode: tee to log file; redirect stdout to temp file (no terminal clutter).
+        home-manager switch --flake ".#$USER" --impure 2>&1 | tee -a "$LOG_FILE" > "$hm_out"
+    fi
+    local hm_status=${PIPESTATUS[0]}
+
+    if [ "$hm_status" -eq 0 ]; then
+        rm -f "$hm_out"
+        echo "Done."
+        log "home-manager switch succeeded"
+    else
+        log "WARNING: home-manager switch failed"
+        # Extract Nix/HM error lines (error: header + up to 2 lines of context each).
+        local hm_errors
+        hm_errors=$(grep -A2 "^error:" "$hm_out" 2>/dev/null | grep -v "^--$" | head -10 || true)
+        rm -f "$hm_out"
+        if [ -n "$hm_errors" ]; then
+            if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
+                # Emit with a prefix so the software center can collect and display them.
+                while IFS= read -r line; do echo "nix-error: ${line}"; done <<< "$hm_errors"
+            else
+                echo "$hm_errors" >&2
             fi
-            die "home-manager switch failed — check $LOG_FILE"
         fi
+        if $made_commit; then
+            if git -C "$HM_CONFIG_DIR" reset --hard HEAD~1 2>/dev/null; then
+                log "reverted HM config commit after switch failure"
+                if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
+                    echo "nix-error: (Your previous configuration has been restored)"
+                else
+                    echo "Your previous configuration has been restored." >&2
+                fi
+            else
+                log "WARNING: could not undo HM config commit after switch failure"
+            fi
+        fi
+        die "home-manager switch failed — check $LOG_FILE"
     fi
 }
 
