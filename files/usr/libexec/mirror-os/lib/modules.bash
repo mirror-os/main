@@ -79,6 +79,9 @@ def nix_value(v):
     escaped = str(v).replace('\\', '\\\\').replace('"', '\\"')
     return f'"{escaped}"'
 
+prefix = f"programs.{programs_name}."
+opts = {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in opts.items()}
+
 lines = []
 for key, val in opts.items():
     # Handle nested dot-notation keys like "signing.key"

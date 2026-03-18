@@ -31,6 +31,8 @@ _detect_module_source() {
     local file="$1"
     if grep -q "services\.flatpak" "$file" 2>/dev/null; then
         echo "flatpak"
+    elif grep -q "programs\." "$file" 2>/dev/null; then
+        echo "nix"
     elif grep -q "home\.packages" "$file" 2>/dev/null; then
         echo "nix"
     elif grep -q "homeManagerModules" "$file" 2>/dev/null; then

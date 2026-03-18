@@ -26,9 +26,11 @@ trigger_switch() {
     local msg="${1:-mirror-os: apply changes}"
     log "Triggering Home Manager switch"
     git -C "$HM_CONFIG_DIR" add -A 2>/dev/null || true
-    # Commit staged changes so home-manager switch doesn't warn about a dirty tree
+    # Commit staged changes so home-manager switch doesn't warn about a dirty tree.
+    # Track whether we made a commit so we can undo it if the switch fails.
+    local made_commit=false
     if ! git -C "$HM_CONFIG_DIR" diff --cached --quiet 2>/dev/null; then
-        git -C "$HM_CONFIG_DIR" commit -m "$msg" 2>/dev/null || true
+        git -C "$HM_CONFIG_DIR" commit -m "$msg" 2>/dev/null && made_commit=true || true
     fi
     echo "Applying changes (this may take a minute)..."
     cd "$HM_CONFIG_DIR"
@@ -45,6 +47,10 @@ trigger_switch() {
             local last_err
             last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
             [ -n "$last_err" ] && echo "$last_err" >&2
+            if $made_commit; then
+                git -C "$HM_CONFIG_DIR" reset --hard HEAD~1 2>/dev/null || \
+                    log "WARNING: could not undo HM config commit after switch failure"
+            fi
             die "home-manager switch failed — check $LOG_FILE"
         fi
     else
@@ -56,6 +62,10 @@ trigger_switch() {
             local last_err
             last_err=$(grep "error:" "$LOG_FILE" | tail -1 2>/dev/null || true)
             [ -n "$last_err" ] && echo "$last_err" >&2
+            if $made_commit; then
+                git -C "$HM_CONFIG_DIR" reset --hard HEAD~1 2>/dev/null || \
+                    log "WARNING: could not undo HM config commit after switch failure"
+            fi
             die "home-manager switch failed — check $LOG_FILE"
         fi
     fi
