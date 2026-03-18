@@ -58,16 +58,31 @@ trigger_switch() {
         local hm_errors first_error_line
         first_error_line=$(grep -n "^error:" "$hm_out" 2>/dev/null | head -1 | cut -d: -f1 || true)
         if [ -n "$first_error_line" ]; then
-            hm_errors=$(tail -n "+${first_error_line}" "$hm_out" 2>/dev/null | head -25 || true)
+            hm_errors=$(tail -n "+${first_error_line}" "$hm_out" 2>/dev/null | head -50 || true)
         else
-            hm_errors=$(tail -15 "$hm_out" 2>/dev/null || true)
+            hm_errors=$(tail -20 "$hm_out" 2>/dev/null || true)
+        fi
+        # Classify the error to give the user a human-readable diagnosis ahead of
+        # the raw Nix trace.  Emit a nix-error-type: line (software center displays
+        # it as a highlighted prefix) or print it first on the terminal.
+        local error_class=""
+        if grep -q "does not exist" <<< "$hm_errors" 2>/dev/null; then
+            error_class="Unknown option: this option is not available in your current configuration."
+        elif grep -q "is not of type" <<< "$hm_errors" 2>/dev/null; then
+            error_class="Invalid value: the value entered does not match the expected type for this option."
+        elif grep -q "home\.file\." <<< "$hm_errors" 2>/dev/null \
+          && grep -q "modules/programs/" <<< "$hm_errors" 2>/dev/null; then
+            error_class="Incompatibility: enabling this option conflicts with another module in your configuration."
         fi
         rm -f "$hm_out"
         if [ -n "$hm_errors" ]; then
             if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
+                # Emit error class first so the software center can prepend it.
+                [ -n "$error_class" ] && echo "nix-error-type: ${error_class}"
                 # Emit with a prefix so the software center can collect and display them.
                 while IFS= read -r line; do echo "nix-error: ${line}"; done <<< "$hm_errors"
             else
+                [ -n "$error_class" ] && echo "⚠ ${error_class}" >&2
                 echo "$hm_errors" >&2
             fi
         fi
