@@ -153,3 +153,12 @@ modules:
   - type: script
     scripts:
       - enable-services.sh
+
+  # Build the initial app catalog database from the Flathub AppStream cache.
+  # Runs after enable-services.sh so all scripts are executable.
+  # Stores catalog.db and icons at /usr/share/mirror-os/ so
+  # mirror-catalog-bootstrap can seed the user's data dir on first login
+  # without any network download.
+  - type: script
+    scripts:
+      - build-catalog.sh
