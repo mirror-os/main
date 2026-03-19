@@ -11,7 +11,14 @@ log() {
     fi
 }
 
-die() { log "ERROR: $*"; echo "mirror-os: error: $*" >&2; exit 1; }
+die() {
+    log "ERROR: $*"
+    echo "mirror-os: error: $*" >&2
+    # When running in stream mode (called from the software center), also emit to
+    # stdout so the error reaches the GUI dialog — stderr is discarded there.
+    [ "${MIRROR_OS_STREAM:-0}" = "1" ] && echo "nix-error: $*"
+    exit 1
+}
 
 need_init() {
     [ -f "$HOME/.local/share/mirror-os/.init-complete" ] || \
