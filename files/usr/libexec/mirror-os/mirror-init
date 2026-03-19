@@ -192,6 +192,16 @@ else
     log "WARNING: Could not add user-scope flathub remote — user Flatpak installs may fail"
 fi
 
+# ── Step 11b: Bootstrap catalog database ────────────────────────────────────
+# Downloads a pre-built catalog.db and media archives from the catalog-data
+# GitHub release so the Software Center is populated immediately, without
+# waiting for mirror-os-catalog.timer to build the DB from scratch (30+ min).
+# Non-fatal: failures are logged and mirror-init continues normally.
+log "Bootstrapping catalog database from pre-built release..."
+notify "Preparing app catalog…" "Downloading the app catalog for Mirror OS Software Center." "system-software-install"
+/usr/libexec/mirror-os/mirror-catalog-bootstrap >> "$LOG" 2>&1 \
+    || log "WARNING: catalog bootstrap failed — catalog will build on next timer run."
+
 # ── Step 12: First home-manager switch ─────────────────────────────────────
 # nix-flatpak applies global Flatpak overrides (GTK/icon theme) as part of
 # this switch. Default apps are managed by mirror-os-flatpak-init.service, not nix-flatpak.

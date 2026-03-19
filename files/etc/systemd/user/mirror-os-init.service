@@ -9,7 +9,7 @@ Type=oneshot
 ExecStart=/usr/libexec/mirror-os/mirror-init
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=1800
+TimeoutStartSec=2700
 
 [Install]
 WantedBy=graphical-session.target

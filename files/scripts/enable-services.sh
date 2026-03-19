@@ -11,6 +11,7 @@ chmod +x /usr/libexec/mirror-os/mirror-init
 chmod +x /usr/libexec/mirror-os/mirror-sync
 chmod +x /usr/libexec/mirror-os/mirror-os
 chmod +x /usr/libexec/mirror-os/mirror-catalog-update
+chmod +x /usr/libexec/mirror-os/mirror-catalog-bootstrap
 chmod +x /usr/libexec/mirror-os/waydroid-prestart.sh
 
 # sudoers files must be 0440 (root-readable only) or sudo will refuse them

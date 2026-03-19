@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# mirror-catalog-bootstrap — Download pre-built catalog artifacts on first install
+#
+# Downloads catalog.db, icons.tar.zst, and screenshots.tar.zst from the
+# mirror-os/catalog-data GitHub release and installs them so the Software
+# Center is populated immediately, without waiting 30+ minutes for
+# mirror-catalog-update to build from scratch.
+#
+# Called from mirror-init before the home-manager switch.
+# Safe to call repeatedly: skips if catalog.db already exists and is recent.
+# All failures are non-fatal — exits 0 so mirror-init is never blocked.
+
+set -uo pipefail
+
+CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
+MEDIA_DIR="$HOME/.local/share/mirror-os/media"
+LOG="$HOME/.local/share/mirror-os/catalog-bootstrap.log"
+
+RELEASE_BASE="https://github.com/mirror-os/catalog-data/releases/download/catalog-latest"
+MAX_AGE_DAYS=7
+DOWNLOAD_TIMEOUT=120  # seconds per artifact
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+
+mkdir -p "$(dirname "$CATALOG_DB")" "$MEDIA_DIR/icons" "$MEDIA_DIR/screenshots"
+
+# ── Guard: skip if catalog.db is recent ──────────────────────────────────────
+
+if [ -f "$CATALOG_DB" ]; then
+    AGE=$(( ( $(date +%s) - $(stat -c %Y "$CATALOG_DB") ) / 86400 ))
+    if [ "$AGE" -lt "$MAX_AGE_DAYS" ]; then
+        log "catalog.db is ${AGE}d old (< ${MAX_AGE_DAYS}d threshold) — skipping bootstrap."
+        exit 0
+    fi
+    log "catalog.db is ${AGE}d old — downloading fresh copy."
+fi
+
+log "=== Mirror OS catalog bootstrap starting ==="
+
+# ── Download catalog.db ───────────────────────────────────────────────────────
+
+TMP_DB=$(mktemp /tmp/catalog-bootstrap-XXXXXX.db)
+log "Downloading catalog.db from catalog-data release..."
+
+if ! curl --proto '=https' --tlsv1.2 -sSfL \
+        --max-time "$DOWNLOAD_TIMEOUT" \
+        --retry 3 --retry-delay 5 \
+        -o "$TMP_DB" \
+        "$RELEASE_BASE/catalog.db"; then
+    log "WARNING: Failed to download catalog.db — will build from scratch on next timer run."
+    rm -f "$TMP_DB"
+    exit 0
+fi
+
+# Validate: must be a readable SQLite DB with a reasonable number of apps
+if ! python3 - "$TMP_DB" << 'PYEOF'
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1], timeout=10)
+    count = conn.execute("SELECT count(*) FROM flatpak_apps").fetchone()[0]
+    conn.close()
+    if count < 100:
+        print(f"WARNING: only {count} flatpak_apps rows — discarding.", file=sys.stderr)
+        sys.exit(1)
+    print(f"  catalog.db OK: {count} Flatpak apps")
+except Exception as e:
+    print(f"  Invalid DB: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+then
+    log "WARNING: Downloaded catalog.db failed validation — discarding."
+    rm -f "$TMP_DB"
+    exit 0
+fi
+
+# Clear machine-specific icon_local_path values from the exported DB
+python3 - "$TMP_DB" << 'PYEOF'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], timeout=10)
+with conn:
+    conn.execute("UPDATE flatpak_apps SET icon_local_path = ''")
+conn.close()
+PYEOF
+
+mv "$TMP_DB" "$CATALOG_DB"
+log "catalog.db installed ($(du -sh "$CATALOG_DB" | cut -f1))"
+
+# ── Download and extract icons ────────────────────────────────────────────────
+
+TMP_ICONS=$(mktemp /tmp/catalog-icons-XXXXXX.tar.zst)
+log "Downloading icons.tar.zst..."
+
+if curl --proto '=https' --tlsv1.2 -sSfL \
+        --max-time "$DOWNLOAD_TIMEOUT" \
+        --retry 2 --retry-delay 5 \
+        -o "$TMP_ICONS" \
+        "$RELEASE_BASE/icons.tar.zst"; then
+
+    log "Extracting icons..."
+    if tar -x --zstd -f "$TMP_ICONS" -C "$MEDIA_DIR" 2>/dev/null; then
+        ICON_COUNT=$(ls "$MEDIA_DIR/icons/"*.png 2>/dev/null | wc -l)
+        log "Icons extracted: $ICON_COUNT files"
+
+        # Repopulate icon_local_path in the DB for icons that are now on disk
+        python3 - "$CATALOG_DB" "$MEDIA_DIR/icons" << 'PYEOF'
+import sqlite3, os, sys
+db_path = sys.argv[1]
+icons_dir = sys.argv[2]
+conn = sqlite3.connect(db_path, timeout=30)
+rows = conn.execute(
+    "SELECT app_id FROM flatpak_apps WHERE icon_local_path = ''"
+).fetchall()
+updated = 0
+with conn:
+    for (app_id,) in rows:
+        p = os.path.join(icons_dir, f'{app_id}.png')
+        if os.path.isfile(p) and os.path.getsize(p) > 0:
+            conn.execute(
+                "UPDATE flatpak_apps SET icon_local_path = ? WHERE app_id = ?",
+                (p, app_id)
+            )
+            updated += 1
+conn.close()
+print(f"  icon_local_path set for {updated} apps.")
+PYEOF
+    else
+        log "WARNING: Failed to extract icons.tar.zst — icons will populate on next catalog update."
+    fi
+else
+    log "WARNING: Failed to download icons.tar.zst — icons will populate on next catalog update."
+fi
+rm -f "$TMP_ICONS"
+
+# ── Download and extract screenshots ─────────────────────────────────────────
+
+TMP_SS=$(mktemp /tmp/catalog-screenshots-XXXXXX.tar.zst)
+log "Downloading screenshots.tar.zst..."
+
+if curl --proto '=https' --tlsv1.2 -sSfL \
+        --max-time "$DOWNLOAD_TIMEOUT" \
+        --retry 2 --retry-delay 5 \
+        -o "$TMP_SS" \
+        "$RELEASE_BASE/screenshots.tar.zst"; then
+
+    log "Extracting screenshots..."
+    if tar -x --zstd -f "$TMP_SS" -C "$MEDIA_DIR" 2>/dev/null; then
+        SS_COUNT=$(find "$MEDIA_DIR/screenshots" -name '*.jpg' 2>/dev/null | wc -l)
+        log "Screenshots extracted: $SS_COUNT files"
+    else
+        log "WARNING: Failed to extract screenshots.tar.zst — screenshots will populate on next catalog update."
+    fi
+else
+    log "WARNING: Failed to download screenshots.tar.zst — screenshots will populate on next catalog update."
+fi
+rm -f "$TMP_SS"
+
+log "=== Mirror OS catalog bootstrap complete ==="
