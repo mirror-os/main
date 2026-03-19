@@ -1052,6 +1052,14 @@ let
       then node.defaultText.text or ""
       else ""
     );
+    exampleText = tryStr (
+      let ex = node.example or null; in
+      if ex == null then ""
+      else if builtins.isAttrs ex && ex ? text then tryStr ex.text
+      else if builtins.isString ex then ex
+      else let r = builtins.tryEval (builtins.toJSON ex); in
+        if r.success then r.value else ""
+    );
   };
   serialize = node:
     if !(builtins.isAttrs node) then {}
