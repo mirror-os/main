@@ -44,12 +44,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --source) SOURCE="$2"; shift 2 ;;
         --no-media) NO_MEDIA=1; shift ;;
-        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|nix-meta|all] [--no-media]" >&2; exit 1 ;;
+        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|nix-meta|hm-options|all] [--no-media]" >&2; exit 1 ;;
     esac
 done
 
 case "$SOURCE" in
-    flatpak|nix|nix-meta|all) ;;
+    flatpak|nix|nix-meta|hm-options|all) ;;
     *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
 esac
 
@@ -599,18 +599,6 @@ for key, val in data.items():
 rows     = []
 fts_rows = []
 
-# Load programs-map.toml for programs_name lookup
-_programs_map = {}
-_programs_map_path = '/usr/share/mirror-os/programs-map.toml'
-try:
-    import tomllib
-    with open(_programs_map_path, 'rb') as _f:
-        _pm_data = tomllib.load(_f)
-    for _entry in _pm_data.get('program', []):
-        _programs_map[_entry['attr']] = _entry.get('programs_name', '')
-except Exception:
-    pass
-
 for attr, (_, val) in best.items():
     pname = val.get('pname', attr)
     ver   = val.get('version', '')
@@ -627,7 +615,7 @@ for attr, (_, val) in best.items():
         license_ = first.get('spdxId', first.get('fullName', '')) if isinstance(first, dict) else str(first)
     else:
         license_ = str(lic_raw) if lic_raw else ''
-    programs_name = _programs_map.get(attr, '')
+    programs_name = ''  # populated later by update_hm_options
 
     rows.append((attr, pname, ver, desc, '', homepage, license_, '[]', programs_name))
     fts_rows.append(('nix', attr, pname, desc[:200], '', ''))
@@ -1007,6 +995,199 @@ PYEOF
     fi
 }
 
+# ── Home Manager option schema baking ────────────────────────────────────────
+# Detects which nix_packages have a matching HM programs.* module by querying
+# the user's live home-manager flake (one nix eval for the full programs list,
+# then one eval per matched package for the option schema).
+# Stores the detected programs_name and the serialised option JSON in catalog.db.
+# Safe to run standalone: mirror-catalog-update --source hm-options
+
+update_hm_options() {
+    log "Updating HM option schemas (programs_name detection + option baking)..."
+
+    if ! command -v nix &>/dev/null; then
+        log "Nix not available — skipping HM option update."
+        return 1
+    fi
+
+    local username home_dir hm_dir
+    username="${USER:-$(id -un)}"
+    home_dir="${HOME:-/home/$username}"
+    hm_dir="$home_dir/.config/home-manager"
+
+    if [ ! -f "$hm_dir/flake.nix" ]; then
+        log "Home Manager flake not found at $hm_dir/flake.nix — skipping HM option update."
+        return 1
+    fi
+
+    log "Querying available HM programs from $hm_dir ..."
+
+    python3 - "$CATALOG_DB" "$hm_dir" "$username" << 'PYEOF'
+import sys, json, sqlite3, subprocess, time
+from datetime import datetime, timezone
+
+db_path   = sys.argv[1]
+hm_dir    = sys.argv[2]
+username  = sys.argv[3]
+
+# ── Nix expression that strips non-serialisable functions from option nodes ──
+SERIALIZE_OPTS_EXPR = r"""
+let
+  tryStr = v: if builtins.isString v then v else "";
+  serOpt = node: {
+    _type = "option";
+    description = tryStr (
+      if !(node ? description) then ""
+      else if builtins.isString node.description then node.description
+      else if builtins.isAttrs node.description then tryStr (node.description.text or "")
+      else ""
+    );
+    type = tryStr (
+      if node ? type && builtins.isAttrs node.type
+      then node.type.name or "unknown"
+      else "unknown"
+    );
+    defaultText = tryStr (
+      if node ? defaultText && builtins.isAttrs node.defaultText
+      then node.defaultText.text or ""
+      else ""
+    );
+  };
+  serialize = node:
+    if !(builtins.isAttrs node) then {}
+    else if node ? _type && node._type == "option" then serOpt node
+    else builtins.mapAttrs
+      (_k: v: serialize v)
+      (builtins.filterAttrs (k: _: builtins.match "_.*" k == null) node);
+in serialize
+"""
+
+# Known mismatches where nixpkgs attr ≠ HM module name.
+# NOT a curated app list — only true structural exceptions.
+PROGRAMS_OVERRIDES = {
+    "openssh": "ssh",
+}
+
+# ── Schema migration ──────────────────────────────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=60)
+try:
+    conn.execute("ALTER TABLE nix_packages ADD COLUMN hm_options_json TEXT")
+    conn.commit()
+except Exception:
+    pass  # column already exists
+
+# ── Step 1: get all programs.* names from HM ─────────────────────────────────
+flake_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs"
+t0 = time.monotonic()
+try:
+    result = subprocess.run(
+        ["nix", "eval", "--json", "--impure",
+         "--extra-experimental-features", "nix-command flakes",
+         "--apply", "builtins.attrNames",
+         flake_ref],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        print(f"nix eval for programs list failed: {result.stderr.strip()[:300]}", flush=True)
+        conn.close()
+        sys.exit(1)
+    hm_programs = set(json.loads(result.stdout))
+    print(f"Found {len(hm_programs)} HM program modules in {time.monotonic()-t0:.1f}s.", flush=True)
+except subprocess.TimeoutExpired:
+    print("nix eval for programs list timed out — skipping.", flush=True)
+    conn.close()
+    sys.exit(1)
+except Exception as e:
+    print(f"Error fetching HM programs list: {e}", flush=True)
+    conn.close()
+    sys.exit(1)
+
+# ── Step 2: match nix_packages to HM programs ────────────────────────────────
+attrs = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
+matched = []  # (attr, programs_name)
+
+for attr, pname in attrs:
+    # Apply overrides first
+    if attr in PROGRAMS_OVERRIDES:
+        matched.append((attr, PROGRAMS_OVERRIDES[attr]))
+        continue
+    # Direct attr match
+    if attr in hm_programs:
+        matched.append((attr, attr))
+        continue
+    # pname match (fallback)
+    if pname and pname in hm_programs:
+        matched.append((attr, pname))
+        continue
+
+print(f"Matched {len(matched)} packages to HM program modules.", flush=True)
+
+# Update programs_name for all matched packages; clear for unmatched
+with conn:
+    conn.execute("UPDATE nix_packages SET programs_name = ''")
+    conn.executemany(
+        "UPDATE nix_packages SET programs_name = ? WHERE attr = ?",
+        [(pm, a) for a, pm in matched],
+    )
+
+# ── Step 3: evaluate and store HM option schemas ─────────────────────────────
+total = len(matched)
+success = 0
+t_start = time.monotonic()
+print(f"Baking HM option schemas for {total} packages...", flush=True)
+
+for i, (attr, programs_name) in enumerate(matched, 1):
+    if i % 10 == 0 or i == total:
+        elapsed = time.monotonic() - t_start
+        print(f"  [{i}/{total}] {elapsed:.0f}s elapsed...", flush=True)
+
+    opts_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs.{programs_name}"
+    try:
+        result = subprocess.run(
+            ["nix", "eval", "--json", "--impure",
+             "--extra-experimental-features", "nix-command flakes",
+             "--apply", SERIALIZE_OPTS_EXPR,
+             opts_ref],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            # Log but don't abort — some programs may not be reachable
+            snippet = result.stderr.strip()[:200]
+            print(f"  {attr}: nix eval failed: {snippet}", flush=True)
+            continue
+        opts_json = result.stdout.strip()
+        with conn:
+            conn.execute(
+                "UPDATE nix_packages SET hm_options_json = ? WHERE attr = ?",
+                (opts_json, attr),
+            )
+        success += 1
+    except subprocess.TimeoutExpired:
+        print(f"  {attr}: timed out — skipping", flush=True)
+    except Exception as e:
+        print(f"  {attr}: error: {e}", flush=True)
+
+# Record in catalog_meta
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+with conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count) VALUES ('hm-options', ?, ?)",
+        (now, success),
+    )
+conn.close()
+
+elapsed_total = time.monotonic() - t_start
+print(f"HM options baked: {success}/{total} programs in {elapsed_total:.1f}s.")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "HM option schemas updated successfully."
+    else
+        log "HM option schema update failed (exit $rc)."
+        return $rc
+    fi
+}
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 log "Starting catalog update (source: $SOURCE, media: $([ $NO_MEDIA -eq 1 ] && echo skip || echo enabled))..."
@@ -1024,10 +1205,14 @@ case "$SOURCE" in
     nix-meta)
         update_nix_meta || true
         ;;
+    hm-options)
+        update_hm_options || true
+        ;;
     all)
-        update_flatpak  || true
-        update_nix      || true
-        update_nix_meta || true
+        update_flatpak    || true
+        update_nix        || true
+        update_nix_meta   || true
+        update_hm_options || true
         build_app_map
         ;;
 esac

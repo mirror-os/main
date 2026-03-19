@@ -30,22 +30,14 @@ write_nix_module() {
 EOF
 }
 
-# Look up programs_name for a nix attr in programs-map.toml.
-# Prints the programs_name (e.g. "git") or nothing if not mapped.
+# Look up programs_name for a nix attr from catalog.db.
+# Prints the programs_name (e.g. "fish") or nothing if not mapped.
 _lookup_programs_name() {
     local attr="$1"
-    local map_file="/usr/share/mirror-os/programs-map.toml"
-    [ -f "$map_file" ] || return 0
-    python3 - "$map_file" "$attr" << 'PYEOF'
-import sys, tomllib
-map_file, attr = sys.argv[1], sys.argv[2]
-with open(map_file, "rb") as f:
-    data = tomllib.load(f)
-for entry in data.get("program", []):
-    if entry.get("attr") == attr:
-        print(entry.get("programs_name", ""))
-        break
-PYEOF
+    [ -f "$CATALOG_DB" ] || return 0
+    sqlite3 "$CATALOG_DB" \
+        "SELECT COALESCE(programs_name,'') FROM nix_packages WHERE attr = ? AND programs_name != '';" \
+        "$attr" 2>/dev/null || true
 }
 
 # Write a Home Manager programs.<name> module, optionally hydrating options
@@ -67,6 +59,10 @@ sidecar_file, programs_name = sys.argv[1], sys.argv[2]
 with open(sidecar_file) as f:
     opts = json.load(f)
 
+def nix_string(s):
+    escaped = str(s).replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
 def nix_value(v):
     if isinstance(v, bool):
         return "true" if v else "false"
@@ -79,11 +75,25 @@ def nix_value(v):
     if isinstance(v, (int, float)):
         return str(v)
     if isinstance(v, list):
-        items = " ".join('"' + str(i).replace('\\', '\\\\').replace('"', '\\"') + '"' for i in v)
+        # List of attrsets (e.g. docker contexts, fish plugins as objects)
+        if v and isinstance(v[0], dict):
+            parts = []
+            for item in v:
+                fields = " ".join(
+                    f'{k} = {nix_value(val)};'
+                    for k, val in item.items()
+                )
+                parts.append(f'{{ {fields} }}')
+            return '[ ' + ' '.join(parts) + ' ]'
+        # List of dicts where values are strings (e.g. key-value attrsets stored as list)
+        items = " ".join(nix_string(i) for i in v)
         return f"[ {items} ]"
+    if isinstance(v, dict):
+        # Attrset of string (e.g. shellAbbrs, shellAliases)
+        fields = " ".join(f'{k} = {nix_value(val)};' for k, val in v.items())
+        return f'{{ {fields} }}'
     # string / path
-    escaped = str(v).replace('\\', '\\\\').replace('"', '\\"')
-    return f'"{escaped}"'
+    return nix_string(v)
 
 prefix = f"programs.{programs_name}."
 opts = {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in opts.items()}

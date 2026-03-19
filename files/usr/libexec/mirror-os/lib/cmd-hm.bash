@@ -37,7 +37,7 @@ else:
 PYEOF
             ;;
         *)
-            die "Usage: mirror-os catalog update [--source flatpak|nix|all] | mirror-os catalog status"
+            die "Usage: mirror-os catalog update [--source flatpak|nix|nix-meta|hm-options|all] | mirror-os catalog status"
             ;;
     esac
 }
@@ -205,6 +205,152 @@ cmd_remove_option() {
     log "remove-option: '${app_id}' ${key}"
     echo "Removed option '${key}' from ${app_id}."
     trigger_switch "mirror-os: configure ${app_id} (remove ${key})"
+}
+
+# ── mirror-os config — HM option management CLI ───────────────────────────────
+#
+# Usage:
+#   mirror-os config <attr>                        list current options
+#   mirror-os config <attr> get <key>             print one value
+#   mirror-os config <attr> set <key> <value>     set scalar option
+#   mirror-os config <attr> add <key> <item>      append item to list option
+#   mirror-os config <attr> remove <key> <item>   remove item from list
+#   mirror-os config <attr> unset <key>           remove a key entirely
+#
+# Reads/writes the sidecar JSON at ~/.config/home-manager/apps/<attr>.options.json
+# (the same file used by the Mirror OS Software Center).  After each write,
+# regenerates the .nix module and triggers a home-manager switch.
+cmd_config() {
+    need_init
+    local attr="${1:-}"
+    local action="${2:-list}"
+    [ -z "$attr" ] && die "Usage: mirror-os config <attr> [list|get|set|add|remove|unset] [args…]"
+
+    local module_f sidecar_f
+    module_f=$(module_file "$attr")
+    sidecar_f="${APPS_DIR}/${attr}.options.json"
+
+    # Require the app to be installed for any write operation
+    case "$action" in
+        set|add|remove|unset)
+            [ -f "$module_f" ] || die "App '${attr}' not found. Use 'mirror-os list' to see installed apps."
+            ;;
+    esac
+
+    python3 - "$sidecar_f" "$action" "${@:3}" << 'PYEOF'
+import sys, json, os
+
+sidecar_f = sys.argv[1]
+action    = sys.argv[2]
+rest      = sys.argv[3:]
+
+def load():
+    if os.path.isfile(sidecar_f):
+        with open(sidecar_f) as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+    return {}
+
+def save(data):
+    os.makedirs(os.path.dirname(sidecar_f), exist_ok=True)
+    with open(sidecar_f, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def coerce(s):
+    """Try to parse as JSON; fall back to raw string."""
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+if action == 'list':
+    data = load()
+    if not data:
+        print("(no options configured)")
+    else:
+        w = max(len(k) for k in data) if data else 0
+        for k, v in sorted(data.items()):
+            print(f"  {k:<{w}}  =  {json.dumps(v)}")
+
+elif action == 'get':
+    if not rest:
+        print("Usage: mirror-os config <attr> get <key>", file=sys.stderr); sys.exit(1)
+    key = rest[0]
+    data = load()
+    if key not in data:
+        print(f"(not set)", file=sys.stderr); sys.exit(1)
+    print(json.dumps(data[key]))
+
+elif action == 'set':
+    if len(rest) < 2:
+        print("Usage: mirror-os config <attr> set <key> <value>", file=sys.stderr); sys.exit(1)
+    key, value = rest[0], coerce(rest[1])
+    data = load()
+    data[key] = value
+    save(data)
+    print(f"Set {key} = {json.dumps(value)}")
+
+elif action == 'add':
+    if len(rest) < 2:
+        print("Usage: mirror-os config <attr> add <key> <item>", file=sys.stderr); sys.exit(1)
+    key, item = rest[0], coerce(rest[1])
+    data = load()
+    lst = data.get(key, [])
+    if not isinstance(lst, list):
+        print(f"Error: '{key}' is not a list option (current type: {type(lst).__name__})", file=sys.stderr); sys.exit(1)
+    if item not in lst:
+        lst.append(item)
+        data[key] = lst
+        save(data)
+        print(f"Added {json.dumps(item)} to {key}")
+    else:
+        print(f"{json.dumps(item)} already in {key}")
+
+elif action == 'remove':
+    if len(rest) < 2:
+        print("Usage: mirror-os config <attr> remove <key> <item>", file=sys.stderr); sys.exit(1)
+    key, item = rest[0], coerce(rest[1])
+    data = load()
+    lst = data.get(key, [])
+    if not isinstance(lst, list):
+        print(f"Error: '{key}' is not a list option", file=sys.stderr); sys.exit(1)
+    if item in lst:
+        lst.remove(item)
+        data[key] = lst
+        save(data)
+        print(f"Removed {json.dumps(item)} from {key}")
+    else:
+        print(f"{json.dumps(item)} not found in {key}")
+
+elif action == 'unset':
+    if not rest:
+        print("Usage: mirror-os config <attr> unset <key>", file=sys.stderr); sys.exit(1)
+    key = rest[0]
+    data = load()
+    if key in data:
+        del data[key]
+        save(data)
+        print(f"Unset {key}")
+    else:
+        print(f"(key '{key}' was not set)")
+
+else:
+    print(f"Unknown action '{action}'. Use: list, get, set, add, remove, unset", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    local rc=$?
+    [ $rc -ne 0 ] && return $rc
+
+    # For write actions: regenerate .nix module and switch
+    case "$action" in
+        set|add|remove|unset)
+            regenerate_module_from_sidecar "$attr"
+            log "config: '${attr}' $action"
+            trigger_switch "mirror-os config: ${attr} ${action} ${3:-}"
+            ;;
+    esac
 }
 
 # Apply options from the sidecar JSON to a programs module, then run HM switch.

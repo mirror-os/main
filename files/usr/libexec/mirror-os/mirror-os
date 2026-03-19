@@ -75,8 +75,14 @@ Usage:
   mirror-os list [--json]                          List mirror-os managed apps
   mirror-os info <id> [--json]                     Show app details and module
   mirror-os update                                 Update flake.lock and switch
-  mirror-os catalog update [--source flatpak|nix|all]  Rebuild app catalog DB
+  mirror-os catalog update [--source flatpak|nix|nix-meta|hm-options|all]  Rebuild app catalog DB
   mirror-os catalog status                         Show catalog build status
+  mirror-os config <attr>                          List HM options for an installed app
+  mirror-os config <attr> get <key>               Print one option value
+  mirror-os config <attr> set <key> <value>       Set a scalar option
+  mirror-os config <attr> add <key> <item>        Append item to a list option
+  mirror-os config <attr> remove <key> <item>     Remove item from a list option
+  mirror-os config <attr> unset <key>             Remove an option
   mirror-os snapshots [--type cosmic|apps|all] [--json]  List state snapshots
   mirror-os rollback cosmic <sha|index>            Restore COSMIC config from snapshot
   mirror-os system update                          Stage the latest OS image update
@@ -106,6 +112,10 @@ Examples:
   mirror-os browse --category Audio --json
   mirror-os catalog update
   mirror-os catalog status
+  mirror-os config fish list
+  mirror-os config fish add plugins z-lua
+  mirror-os config fish set shellAbbrs.gst 'git status'
+  mirror-os config fish remove plugins z-lua
   mirror-os --app com.spotify.Client --add-option "environment.PULSE_LATENCY_MSEC" "60"
   mirror-os --app com.spotify.Client --remove-option "environment.PULSE_LATENCY_MSEC"
   mirror-os --app com.spotify.Client --edit
@@ -137,6 +147,7 @@ case "${1:-}" in
     info)      shift; cmd_info "$@" ;;
     update)    cmd_update ;;
     catalog)   shift; cmd_catalog "$@" ;;
+    config)    shift; cmd_config "$@" ;;
     snapshots) shift; cmd_snapshots "$@" ;;
     rollback)  shift; cmd_rollback "$@" ;;
     system)    shift; cmd_system "$@" ;;
