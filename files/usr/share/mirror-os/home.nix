@@ -130,5 +130,27 @@
       "/usr/share"
       "/var/lib/flatpak/exports/share"
     ];
+    # Allow Nix-installed GPU-accelerated apps (e.g. Alacritty, Blender) to use
+    # the host system's DRI drivers on COSMIC/Wayland.  Without this, Nix-bundled
+    # Mesa looks for drivers in the Nix store and fails with a display/EGL error.
+    LIBGL_DRIVERS_PATH = "/run/opengl-driver/lib/dri";
   };
+
+  # After every home-manager switch, register any Nix-managed shell binaries in
+  # /etc/shells so that chsh can use them as a login shell.  Uses the
+  # mirror-add-shell helper (passwordless sudo via sudoers.d/mirror-os-add-shell)
+  # and only touches paths under well-known Nix profile directories.
+  home.activation.addNixShellsToEtcShells = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    for _shell_name in fish bash nu xonsh elvish; do
+      for _base in "$HOME/.nix-profile/bin" \
+                   "$HOME/.local/state/nix/profiles/profile/bin"; do
+        _shell_path="$_base/$_shell_name"
+        if [ -x "$_shell_path" ] && \
+           ! grep -qF "$_shell_path" /etc/shells 2>/dev/null; then
+          sudo /usr/libexec/mirror-os/mirror-add-shell "$_shell_path" || true
+        fi
+      done
+    done
+    unset _shell_name _base _shell_path
+  '';
 }

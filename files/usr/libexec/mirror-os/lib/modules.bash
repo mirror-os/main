@@ -60,7 +60,12 @@ with open(sidecar_file) as f:
     opts = json.load(f)
 
 def nix_string(s):
-    escaped = str(s).replace('\\', '\\\\').replace('"', '\\"')
+    escaped = (str(s)
+        .replace('\\', '\\\\')
+        .replace('"', '\\"')
+        .replace('\n', '\\n')
+        .replace('\r', '\\r')
+        .replace('\t', '\\t'))
     return f'"{escaped}"'
 
 def nix_value(v):
@@ -149,8 +154,15 @@ regenerate_module_from_sidecar() {
         write_programs_module "$attr" "$programs_name" "$sidecar_file" "$module_file"
         log "regenerated programs module for '${attr}'"
     else
-        # home.packages format — just keep it, options don't apply here
-        log "regenerate_module_from_sidecar: '${attr}' uses home.packages format, nothing to regenerate"
+        # home.packages format — upgrade to programs module if a programs_name is mapped
+        local programs_name
+        programs_name=$(_lookup_programs_name "$attr")
+        if [ -n "$programs_name" ]; then
+            write_programs_module "$attr" "$programs_name" "$sidecar_file" "$module_file"
+            log "upgraded '${attr}' from home.packages to programs.${programs_name}"
+        else
+            log "regenerate_module_from_sidecar: '${attr}' uses home.packages, no programs mapping — nothing to regenerate"
+        fi
     fi
 }
 

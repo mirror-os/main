@@ -1,0 +1,5 @@
+# Allow wheel group members to register Nix-managed shell binaries in
+# /etc/shells without a password.  This lets home.activation scripts add
+# shells like fish or nushell (installed via Nix) so that chsh can use them.
+# Scoped to the mirror-add-shell helper — no broader sudo privileges granted.
+%wheel ALL=(root) NOPASSWD: /usr/libexec/mirror-os/mirror-add-shell *

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# mirror-add-shell — add a Nix shell binary to /etc/shells
+#
+# Called from home.activation scripts (via passwordless sudo) to register
+# Nix-managed shells so that chsh can use them as login shells.
+# Only accepts paths under well-known Nix directories to prevent abuse.
+#
+# Usage: sudo mirror-add-shell <absolute-path-to-shell-binary>
+
+set -euo pipefail
+
+shell_path="${1:-}"
+
+if [ -z "$shell_path" ]; then
+    echo "Usage: mirror-add-shell <path>" >&2
+    exit 1
+fi
+
+# Restrict to Nix store and user profile paths only.
+case "$shell_path" in
+    /nix/store/*/bin/*|\
+    /home/*/.nix-profile/bin/*|\
+    /home/*/.local/state/nix/profiles/*/bin/*|\
+    /root/.nix-profile/bin/*)
+        ;;
+    *)
+        echo "mirror-add-shell: rejected path '${shell_path}' (only Nix paths are allowed)" >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -x "$shell_path" ]; then
+    echo "mirror-add-shell: not executable: ${shell_path}" >&2
+    exit 1
+fi
+
+if grep -qF "$shell_path" /etc/shells 2>/dev/null; then
+    exit 0  # already listed, nothing to do
+fi
+
+echo "$shell_path" >> /etc/shells
+echo "mirror-add-shell: registered ${shell_path}"
