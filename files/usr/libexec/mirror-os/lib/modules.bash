@@ -30,14 +30,44 @@ write_nix_module() {
 EOF
 }
 
-# Look up programs_name for a nix attr from catalog.db.
-# Prints the programs_name (e.g. "fish") or nothing if not mapped.
+# Look up programs_name for a nix attr.
+# Primary: catalog DB (fast).  Fallback: live nix eval against the user's HM
+# flake when the catalog has no entry (e.g. fresh install before the hourly
+# mirror-catalog-update --source hm-options has run).  Caches the result back
+# into the DB so subsequent calls are instant.
+# Prints the programs_name (e.g. "alacritty") or nothing if no HM module exists.
 _lookup_programs_name() {
     local attr="$1"
-    [ -f "$CATALOG_DB" ] || return 0
-    sqlite3 "$CATALOG_DB" \
-        "SELECT COALESCE(programs_name,'') FROM nix_packages WHERE attr = ? AND programs_name != '';" \
-        "$attr" 2>/dev/null || true
+    local name=""
+
+    # Primary: fast catalog DB lookup
+    if [ -f "$CATALOG_DB" ]; then
+        name=$(sqlite3 "$CATALOG_DB" \
+            "SELECT COALESCE(programs_name,'') FROM nix_packages WHERE attr = ? AND programs_name != '';" \
+            "$attr" 2>/dev/null || true)
+    fi
+
+    # Fallback: live HM eval when catalog has no entry.
+    # Checks if programs.<attr>.enable exists in the user's HM flake; if so,
+    # assumes attr == programs_name (true for the vast majority of packages) and
+    # caches the result in the DB for future fast lookups.
+    if [ -z "$name" ] && [ -d "${HM_CONFIG_DIR:-}" ] && [ -n "${USER:-}" ]; then
+        if nix eval --impure \
+                --extra-experimental-features "nix-command flakes" \
+                --apply 'x: "ok"' \
+                "${HM_CONFIG_DIR}#homeConfigurations.${USER}.options.programs.${attr}.enable" \
+                >/dev/null 2>&1; then
+            name="$attr"
+            # Cache in DB so subsequent calls skip the nix eval
+            if [ -f "$CATALOG_DB" ]; then
+                sqlite3 "$CATALOG_DB" \
+                    "UPDATE nix_packages SET programs_name = ? WHERE attr = ? AND (programs_name IS NULL OR programs_name = '');" \
+                    "$attr" "$attr" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    echo "$name"
 }
 
 # Write a Home Manager programs.<name> module, optionally hydrating options
