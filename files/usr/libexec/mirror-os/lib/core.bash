@@ -81,6 +81,32 @@ trigger_switch() {
           && grep -q "modules/programs/" <<< "$hm_errors" 2>/dev/null; then
             error_class="Incompatibility: enabling this option conflicts with another module in your configuration."
         fi
+        # Auto-retry: when HM refuses to clobber a pre-existing unmanaged config file,
+        # retry with -b backup which renames the conflicting file to <name>.backup.
+        if grep -q "would be clobbered" "$hm_out" 2>/dev/null; then
+            local retry_out
+            retry_out=$(mktemp)
+            echo "Backing up conflicting files and retrying..."
+            if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then
+                home-manager switch --flake ".#$USER" --impure -b backup 2>&1 \
+                    | tee -a "$LOG_FILE" "$retry_out"
+            else
+                home-manager switch --flake ".#$USER" --impure -b backup 2>&1 \
+                    | tee -a "$LOG_FILE" > "$retry_out"
+            fi
+            local retry_status=${PIPESTATUS[0]}
+            rm -f "$retry_out" "$hm_out"
+            if [ "$retry_status" -eq 0 ]; then
+                echo "Done. (conflicting files backed up with .backup extension)"
+                log "home-manager switch succeeded after -b backup retry"
+                return 0
+            fi
+            # Retry also failed; re-point hm_out to an empty temp file so the
+            # downstream rm -f still has a valid target.
+            hm_out=$(mktemp)
+            hm_errors=""
+        fi
+
         rm -f "$hm_out"
         if [ -n "$hm_errors" ]; then
             if [ "${MIRROR_OS_STREAM:-0}" = "1" ]; then

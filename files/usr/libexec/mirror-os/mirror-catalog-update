@@ -1023,7 +1023,7 @@ update_hm_options() {
     log "Querying available HM programs from $hm_dir ..."
 
     python3 - "$CATALOG_DB" "$hm_dir" "$username" << 'PYEOF'
-import sys, json, sqlite3, subprocess, time
+import sys, json, sqlite3, subprocess, time, re
 from datetime import datetime, timezone
 
 db_path   = sys.argv[1]
@@ -1114,6 +1114,12 @@ except Exception as e:
 attrs = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
 matched = []  # (attr, programs_name)
 
+def _normalize_attr(s: str) -> str:
+    """Lowercase + strip non-alphanumeric for loose attr/pname comparison.
+    Used to detect variant packages (e.g. fishMinimal vs fish) where the
+    pname fallback should not apply."""
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
 for attr, pname in attrs:
     # Apply overrides first
     if attr in PROGRAMS_OVERRIDES:
@@ -1123,8 +1129,10 @@ for attr, pname in attrs:
     if attr in hm_programs:
         matched.append((attr, attr))
         continue
-    # pname match (fallback)
-    if pname and pname in hm_programs:
+    # pname fallback: only when attr and pname normalize to the same token.
+    # Skip for variant packages like fishMinimal (attr) vs fish (pname) —
+    # they share the pname but have no programs.<attr> HM module of their own.
+    if pname and pname in hm_programs and _normalize_attr(attr) == _normalize_attr(pname):
         matched.append((attr, pname))
         continue
 
