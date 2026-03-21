@@ -422,8 +422,9 @@ cache_flatpak_media() {
     log "Caching Flatpak media (Phase 2: downloading missing icons and screenshots)..."
 
     python3 - "$CATALOG_DB" "$MEDIA_DIR" << 'PYEOF'
-import sys, os, json, sqlite3, time
+import sys, os, json, sqlite3, time, threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 db_path    = sys.argv[1]
 media_dir  = sys.argv[2]
@@ -444,6 +445,14 @@ SS_TIMEOUT   = 10
 TOTAL_BUDGET = 1800
 t_start = time.monotonic()
 
+# Worker count: network-bound, so 2x CPU cores up to 16 max.
+# Override with MIRROR_MEDIA_WORKERS env var.
+_env_workers = os.environ.get('MIRROR_MEDIA_WORKERS', '')
+MAX_WORKERS = int(_env_workers) if _env_workers.isdigit() and int(_env_workers) > 0 \
+    else min((os.cpu_count() or 2) * 2, 16)
+
+budget_expired = threading.Event()
+
 def budget_remaining():
     return TOTAL_BUDGET - (time.monotonic() - t_start)
 
@@ -452,46 +461,53 @@ def fetch(url, timeout):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
-# ── Icons ─────────────────────────────────────────────────────────────────
-icon_updates = []  # (icon_local_path, app_id)
-n_icons = len(remote_icons)
-print(f"Downloading {n_icons} missing icons...", flush=True)
-for i, (app_id, url) in enumerate(remote_icons):
-    if budget_remaining() <= 0:
-        print(f"  Budget exhausted after {i} icons; deferring rest.", flush=True)
-        break
-    if i > 0 and i % 50 == 0:
-        print(f"  Icons: {i}/{n_icons} ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
+# ── Icons (parallel) ─────────────────────────────────────────────────────
+def download_icon(app_id, url):
+    if budget_expired.is_set():
+        return None
     dst = os.path.join(icons_dir, f'{app_id}.png')
     if os.path.isfile(dst) and os.path.getsize(dst) > 0:
-        icon_updates.append((dst, app_id))
-        continue
+        return (dst, app_id)
     try:
         data = fetch(url, ICON_TIMEOUT)
         if data:
             with open(dst, 'wb') as f:
                 f.write(data)
-            icon_updates.append((dst, app_id))
+            return (dst, app_id)
     except Exception:
         pass
+    return None
 
-# ── Screenshots ───────────────────────────────────────────────────────────
-ss_updates = {}  # app_id -> screenshots JSON
-n_apps = len(remote_screenshots)
-n_done = 0
-print(f"Downloading screenshots for {n_apps} apps...", flush=True)
-for app_id, screenshots_raw in remote_screenshots:
-    if budget_remaining() <= 0:
-        print(f"  Budget exhausted after {n_done}/{n_apps} apps; deferring rest.", flush=True)
-        break
-    n_done += 1
-    if n_done % 100 == 0:
-        print(f"  Screenshots: {n_done}/{n_apps} apps ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
+icon_updates = []
+n_icons = len(remote_icons)
+print(f"Downloading {n_icons} missing icons ({MAX_WORKERS} workers)...", flush=True)
 
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    futures = {pool.submit(download_icon, aid, url): aid
+               for aid, url in remote_icons}
+    done_count = 0
+    for future in as_completed(futures):
+        done_count += 1
+        if budget_remaining() <= 0 and not budget_expired.is_set():
+            budget_expired.set()
+            print(f"  Budget exhausted after {done_count} icons; cancelling remaining.", flush=True)
+        result = future.result()
+        if result is not None:
+            icon_updates.append(result)
+        if done_count % 100 == 0:
+            print(f"  Icons: {done_count}/{n_icons} ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
+
+# ── Screenshots (parallel per app) ───────────────────────────────────────
+def download_app_screenshots(app_id, screenshots_raw):
+    if budget_expired.is_set():
+        return None
     ss_dir = os.path.join(ss_base_dir, app_id)
     os.makedirs(ss_dir, exist_ok=True)
     screenshots = []
     for i, ss in enumerate(screenshots_raw):
+        if budget_expired.is_set():
+            screenshots.append(dict(ss, local_path=''))
+            continue
         local_path = os.path.join(ss_dir, f'{i}.jpg')
         if os.path.isfile(local_path) and os.path.getsize(local_path) > 0:
             screenshots.append(dict(ss, local_path=local_path))
@@ -506,7 +522,32 @@ for app_id, screenshots_raw in remote_screenshots:
         except Exception:
             pass
         screenshots.append(dict(ss, local_path=''))
-    ss_updates[app_id] = json.dumps(screenshots)
+    return (app_id, json.dumps(screenshots))
+
+# Reset budget event for screenshot phase (icons may have set it prematurely
+# while in-flight futures were still completing).
+if not budget_expired.is_set() or budget_remaining() > 0:
+    budget_expired.clear()
+
+ss_updates = {}
+n_apps = len(remote_screenshots)
+print(f"Downloading screenshots for {n_apps} apps ({MAX_WORKERS} workers)...", flush=True)
+
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    futures = {pool.submit(download_app_screenshots, aid, ss_raw): aid
+               for aid, ss_raw in remote_screenshots}
+    done_count = 0
+    for future in as_completed(futures):
+        done_count += 1
+        if budget_remaining() <= 0 and not budget_expired.is_set():
+            budget_expired.set()
+            print(f"  Budget exhausted after {done_count}/{n_apps} apps; cancelling remaining.", flush=True)
+        result = future.result()
+        if result is not None:
+            app_id, ss_json = result
+            ss_updates[app_id] = ss_json
+        if done_count % 200 == 0:
+            print(f"  Screenshots: {done_count}/{n_apps} apps ({time.monotonic()-t_start:.0f}s elapsed)...", flush=True)
 
 # ── Write updates back to DB ──────────────────────────────────────────────
 if icon_updates or ss_updates:
@@ -742,11 +783,18 @@ update_nix_meta() {
     log "This may take 20-40 min on first run or after a nixpkgs update."
 
     python3 - "$CATALOG_DB" "$nixpkgs_rev" << 'PYEOF'
-import sys, json, sqlite3, subprocess, time
+import sys, json, sqlite3, subprocess, time, os
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 db_path      = sys.argv[1]
 nixpkgs_rev  = sys.argv[2]
+
+# Worker count for parallel nix eval (CPU/memory-heavy).
+# Override with MIRROR_NIX_WORKERS env var.
+_env_workers = os.environ.get('MIRROR_NIX_WORKERS', '')
+MAX_WORKERS = int(_env_workers) if _env_workers.isdigit() and int(_env_workers) > 0 \
+    else min(os.cpu_count() or 2, 4)
 
 conn = sqlite3.connect(db_path, timeout=60)
 
@@ -759,38 +807,32 @@ except Exception:
 
 attrs = [row[0] for row in conn.execute("SELECT attr FROM nix_packages").fetchall()]
 total = len(attrs)
-print(f"Enriching metadata for {total} Nix packages in chunks of 200...", flush=True)
 
 CHUNK   = 200
 TIMEOUT = 180  # seconds per chunk
 
-total_updated = 0
-t_start = time.monotonic()
 n_chunks = (total + CHUNK - 1) // CHUNK
+print(f"Enriching metadata for {total} Nix packages in {n_chunks} chunks "
+      f"({MAX_WORKERS} workers)...", flush=True)
 
-for ci, chunk_start in enumerate(range(0, total, CHUNK), 1):
-    chunk = attrs[chunk_start:chunk_start + CHUNK]
+# Build all chunk attr lists up front
+chunks = [attrs[i:i+CHUNK] for i in range(0, total, CHUNK)]
 
-    # Build a safe Nix list literal — attrs are identifiers (alnum + - _)
-    attrs_nix = ' '.join(f'"{a}"' for a in chunk)
-
-    expr = r"""
+NIX_EXPR_TEMPLATE = r"""
 let
   nixpkgs = builtins.getFlake "nixpkgs";
   pkgs    = nixpkgs.legacyPackages.x86_64-linux;
-  attrs   = [ """ + attrs_nix + r""" ];
-  wanted  = builtins.listToAttrs (map (n: { name = n; value = null; }) attrs);
+  attrs   = [ {attrs_nix} ];
+  wanted  = builtins.listToAttrs (map (n: {{ name = n; value = null; }}) attrs);
   subset  = builtins.intersectAttrs wanted pkgs;
-  # safe: evaluate thunk, return default on any error
   safe = thunk: default:
     let r = builtins.tryEval thunk; in
     if r.success then r.value else default;
 in
 builtins.mapAttrs (name: pkg:
   let
-    # Safely access pkg.meta — some packages throw on .meta itself
-    m_r = builtins.tryEval (pkg.meta or {});
-    m   = if m_r.success && builtins.isAttrs m_r.value then m_r.value else {};
+    m_r = builtins.tryEval (pkg.meta or {{}});
+    m   = if m_r.success && builtins.isAttrs m_r.value then m_r.value else {{}};
 
     longDesc = safe (m.longDescription or "") "";
 
@@ -819,14 +861,14 @@ builtins.mapAttrs (name: pkg:
         in if gh != "" then gh else nm)
       (if builtins.isList mts_raw then mts_raw else []);
   in
-  { inherit longDesc homepage license maintainers; }
+  {{ inherit longDesc homepage license maintainers; }}
 ) subset
 """
 
-    elapsed = time.monotonic() - t_start
-    print(f"  Chunk {ci}/{n_chunks} ({len(chunk)} pkgs, {elapsed:.0f}s elapsed)...", flush=True)
-    t_chunk = time.monotonic()
-
+def eval_chunk(ci, chunk):
+    """Evaluate one chunk of attrs. Returns (chunk_index, dict of attr->meta)."""
+    attrs_nix = ' '.join(f'"{a}"' for a in chunk)
+    expr = NIX_EXPR_TEMPLATE.format(attrs_nix=attrs_nix)
     try:
         result = subprocess.run(
             ["nix", "eval", "--json", "--impure", "--expr", expr],
@@ -834,39 +876,53 @@ builtins.mapAttrs (name: pkg:
         )
         if result.returncode != 0:
             snippet = result.stderr.strip()[:300]
-            print(f"    nix eval failed for chunk {ci}: {snippet}", flush=True)
-            continue
-
-        data = json.loads(result.stdout)
+            print(f"    Chunk {ci+1}/{n_chunks} failed: {snippet}", flush=True)
+            return (ci, {})
+        return (ci, json.loads(result.stdout))
     except subprocess.TimeoutExpired:
-        print(f"    Chunk {ci} timed out after {TIMEOUT}s — skipping", flush=True)
-        continue
+        print(f"    Chunk {ci+1}/{n_chunks} timed out after {TIMEOUT}s", flush=True)
+        return (ci, {})
     except Exception as e:
-        print(f"    Chunk {ci} error: {e}", flush=True)
-        continue
+        print(f"    Chunk {ci+1}/{n_chunks} error: {e}", flush=True)
+        return (ci, {})
 
-    updated = 0
-    with conn:
-        for attr, meta in data.items():
-            if not meta:
-                continue
-            ld  = meta.get('longDesc', '')
-            hp  = meta.get('homepage', '')
-            lic = meta.get('license', '')
-            mts = json.dumps([m for m in meta.get('maintainers', []) if m])
+total_updated = 0
+t_start = time.monotonic()
+done_count = 0
 
-            conn.execute("""
-                UPDATE nix_packages SET
-                  long_description = CASE WHEN :ld  != ''   THEN :ld  ELSE long_description END,
-                  homepage         = CASE WHEN :hp  != ''   THEN :hp  ELSE homepage         END,
-                  license          = CASE WHEN :lic != ''   THEN :lic ELSE license          END,
-                  maintainers      = CASE WHEN :mts != '[]' THEN :mts ELSE maintainers      END
-                WHERE attr = :attr
-            """, {'ld': ld, 'hp': hp, 'lic': lic, 'mts': mts, 'attr': attr})
-            updated += 1
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    futures = {pool.submit(eval_chunk, i, chunk): i
+               for i, chunk in enumerate(chunks)}
 
-    total_updated += updated
-    print(f"    {updated} updated in {time.monotonic()-t_chunk:.1f}s", flush=True)
+    for future in as_completed(futures):
+        ci, data = future.result()
+        done_count += 1
+
+        updated = 0
+        if data:
+            with conn:
+                for attr, meta in data.items():
+                    if not meta:
+                        continue
+                    ld  = meta.get('longDesc', '')
+                    hp  = meta.get('homepage', '')
+                    lic = meta.get('license', '')
+                    mts = json.dumps([m for m in meta.get('maintainers', []) if m])
+
+                    conn.execute("""
+                        UPDATE nix_packages SET
+                          long_description = CASE WHEN :ld  != ''   THEN :ld  ELSE long_description END,
+                          homepage         = CASE WHEN :hp  != ''   THEN :hp  ELSE homepage         END,
+                          license          = CASE WHEN :lic != ''   THEN :lic ELSE license          END,
+                          maintainers      = CASE WHEN :mts != '[]' THEN :mts ELSE maintainers      END
+                        WHERE attr = :attr
+                    """, {'ld': ld, 'hp': hp, 'lic': lic, 'mts': mts, 'attr': attr})
+                    updated += 1
+
+        total_updated += updated
+        elapsed = time.monotonic() - t_start
+        print(f"  Chunk {ci+1}/{n_chunks}: {updated} updated "
+              f"({done_count}/{n_chunks} done, {elapsed:.0f}s elapsed)", flush=True)
 
 # Record the nixpkgs rev so we skip on next run if nothing changed
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -1023,16 +1079,23 @@ update_hm_options() {
     log "Querying available HM programs from $hm_dir ..."
 
     python3 - "$CATALOG_DB" "$hm_dir" "$username" << 'PYEOF'
-import sys, json, sqlite3, subprocess, time, re
+import sys, json, sqlite3, subprocess, time, re, os
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 db_path   = sys.argv[1]
 hm_dir    = sys.argv[2]
 username  = sys.argv[3]
 
+# Worker count for parallel nix eval batches (CPU-heavy).
+# Override with MIRROR_NIX_WORKERS env var.
+_env_workers = os.environ.get('MIRROR_NIX_WORKERS', '')
+MAX_WORKERS = int(_env_workers) if _env_workers.isdigit() and int(_env_workers) > 0 \
+    else min(os.cpu_count() or 2, 3)
+
 # ── Nix expression that strips non-serialisable functions from option nodes ──
-SERIALIZE_OPTS_EXPR = r"""
-let
+# Used both in the batched expression and embedded directly in the --expr.
+SERIALIZE_OPTS_NIX = r"""
   tryStr = v: if builtins.isString v then v else "";
   serOpt = node: {
     _type = "option";
@@ -1067,7 +1130,6 @@ let
     else builtins.mapAttrs
       (_k: v: serialize v)
       (builtins.filterAttrs (k: _: builtins.match "_.*" k == null) node);
-in serialize
 """
 
 # Known mismatches where nixpkgs attr ≠ HM module name.
@@ -1146,42 +1208,83 @@ with conn:
         [(pm, a) for a, pm in matched],
     )
 
-# ── Step 3: evaluate and store HM option schemas ─────────────────────────────
-total = len(matched)
-success = 0
-t_start = time.monotonic()
-print(f"Baking HM option schemas for {total} packages...", flush=True)
+# ── Step 3: batched + parallel HM option schema evaluation ───────────────────
+# Instead of one nix eval per program, batch multiple programs into a single
+# nix expression that amortizes the ~1-2s flake evaluation startup cost.
+# Then run batches in parallel with ThreadPoolExecutor.
 
-for i, (attr, programs_name) in enumerate(matched, 1):
-    if i % 10 == 0 or i == total:
-        elapsed = time.monotonic() - t_start
-        print(f"  [{i}/{total}] {elapsed:.0f}s elapsed...", flush=True)
+BATCH_SIZE = 15
+BATCH_TIMEOUT = 180  # seconds per batch
 
-    opts_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs.{programs_name}"
+def eval_hm_batch(batch):
+    """Evaluate a batch of (attr, programs_name) pairs in a single nix eval.
+    Returns dict mapping attr -> opts_json string, or empty on failure."""
+    names_nix = ' '.join(f'"{pm}"' for _, pm in batch)
+    expr = f"""
+let
+  hm = (builtins.getFlake "{hm_dir}").homeConfigurations.{username};
+  {SERIALIZE_OPTS_NIX}
+  names = [ {names_nix} ];
+in builtins.listToAttrs (map (n: {{
+  name = n;
+  value = let r = builtins.tryEval (serialize hm.options.programs.${{n}});
+          in if r.success then r.value else null;
+}}) names)
+"""
     try:
         result = subprocess.run(
             ["nix", "eval", "--json", "--impure",
              "--extra-experimental-features", "nix-command flakes",
-             "--apply", SERIALIZE_OPTS_EXPR,
-             opts_ref],
-            capture_output=True, text=True, timeout=120,
+             "--expr", expr],
+            capture_output=True, text=True, timeout=BATCH_TIMEOUT,
         )
         if result.returncode != 0:
-            # Log but don't abort — some programs may not be reachable
-            snippet = result.stderr.strip()[:200]
-            print(f"  {attr}: nix eval failed: {snippet}", flush=True)
-            continue
-        opts_json = result.stdout.strip()
-        with conn:
-            conn.execute(
-                "UPDATE nix_packages SET hm_options_json = ? WHERE attr = ?",
-                (opts_json, attr),
-            )
-        success += 1
+            snippet = result.stderr.strip()[:300]
+            print(f"  Batch failed ({len(batch)} programs): {snippet}", flush=True)
+            return {}
+        data = json.loads(result.stdout)
+        # Map programs_name back to attr for DB update
+        pm_to_attr = {pm: attr for attr, pm in batch}
+        out = {}
+        for pm, opts in data.items():
+            if opts is not None and pm in pm_to_attr:
+                out[pm_to_attr[pm]] = json.dumps(opts)
+        return out
     except subprocess.TimeoutExpired:
-        print(f"  {attr}: timed out — skipping", flush=True)
+        print(f"  Batch timed out ({len(batch)} programs) — skipping", flush=True)
+        return {}
     except Exception as e:
-        print(f"  {attr}: error: {e}", flush=True)
+        print(f"  Batch error: {e}", flush=True)
+        return {}
+
+total = len(matched)
+success = 0
+t_start = time.monotonic()
+
+# Split into batches
+batches = [matched[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+n_batches = len(batches)
+print(f"Baking HM option schemas for {total} packages in {n_batches} batches "
+      f"({MAX_WORKERS} workers)...", flush=True)
+
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    future_to_idx = {pool.submit(eval_hm_batch, batch): i
+                     for i, batch in enumerate(batches)}
+    for future in as_completed(future_to_idx):
+        bi = future_to_idx[future]
+        results = future.result()
+        if results:
+            with conn:
+                for attr, opts_json in results.items():
+                    conn.execute(
+                        "UPDATE nix_packages SET hm_options_json = ? WHERE attr = ?",
+                        (opts_json, attr),
+                    )
+            success += len(results)
+        elapsed = time.monotonic() - t_start
+        done = sum(1 for f in future_to_idx if future_to_idx[f] <= bi or f.done())
+        print(f"  Batch {bi+1}/{n_batches} done ({len(results)} ok), "
+              f"{elapsed:.0f}s elapsed...", flush=True)
 
 # Record in catalog_meta
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -1211,6 +1314,11 @@ log "Starting catalog update (source: $SOURCE, media: $([ $NO_MEDIA -eq 1 ] && e
 case "$SOURCE" in
     flatpak)
         update_flatpak || true
+        if [ $NO_MEDIA -eq 0 ]; then
+            cache_flatpak_media || true
+        else
+            log "Skipping media download (--no-media)."
+        fi
         build_app_map
         ;;
     nix)
@@ -1225,18 +1333,31 @@ case "$SOURCE" in
         update_hm_options || true
         ;;
     all)
-        update_flatpak    || true
-        update_nix        || true
-        update_nix_meta   || true
-        update_hm_options || true
+        # Flatpak and Nix pipelines write to independent tables — run in parallel.
+        (
+            update_flatpak || true
+            if [ $NO_MEDIA -eq 0 ]; then
+                cache_flatpak_media || true
+            else
+                log "Skipping media download (--no-media)."
+            fi
+        ) &
+        flatpak_pid=$!
+
+        (
+            update_nix || true
+            # nix-meta and hm-options update different columns — run in parallel
+            update_nix_meta &
+            meta_pid=$!
+            update_hm_options &
+            hm_pid=$!
+            wait $meta_pid $hm_pid
+        ) &
+        nix_pid=$!
+
+        wait $flatpak_pid $nix_pid
         build_app_map
         ;;
 esac
-
-if [ $NO_MEDIA -eq 0 ]; then
-    cache_flatpak_media || true
-else
-    log "Skipping media download (--no-media)."
-fi
 
 log "Catalog update complete."
