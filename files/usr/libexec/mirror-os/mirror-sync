@@ -36,6 +36,16 @@ if ! command -v nix &>/dev/null; then
     exit 0
 fi
 
+# ── Refresh catalog from image if updated ────────────────────────────────────
+# mirror-catalog-bootstrap checks whether the system catalog.db hash has changed
+# since the last run and exits immediately (<0.1 s) when nothing has changed.
+# This covers the image-update case: when a new image is booted, mirror-sync
+# detects the hash mismatch on its first run and refreshes catalog + icons.
+if [ -f /usr/share/mirror-os/catalog.db ]; then
+    /usr/libexec/mirror-os/mirror-catalog-bootstrap >> "$LOG" 2>&1 \
+        || log "WARNING: catalog refresh failed (non-fatal)"
+fi
+
 log "=== Mirror OS Sync starting ==="
 
 # ── App state snapshot ───────────────────────────────────────────────────────

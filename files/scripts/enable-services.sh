@@ -25,7 +25,6 @@ systemctl enable bootc-fetch-apply-updates.timer
 systemctl --global enable mirror-os-init.service
 systemctl --global enable mirror-os-sync.timer
 systemctl --global enable mirror-os-apps.path
-systemctl --global enable mirror-os-catalog.timer
 systemctl --global enable mirror-os-update.timer
 systemctl --global enable mirror-os-gc.timer
 

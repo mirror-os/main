@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# mirror-catalog-bootstrap — Seed the app catalog from the image on first login.
+# mirror-catalog-bootstrap — Seed or refresh the app catalog from the image.
 #
 # Copies the pre-built catalog.db and icons baked into the image at
 # /usr/share/mirror-os/ to the user's data directory so the Software Center
 # is populated immediately without waiting for mirror-catalog-update.
 #
-# Called from mirror-init. Only runs if catalog.db does not yet exist.
-# Non-fatal: exits 0 on any error so mirror-init is never blocked.
+# Runs on first login (via mirror-init) and on every mirror-sync run.
+# Uses a sha256 hash of the system catalog to detect image updates and
+# refresh the user's catalog when a new image ships a different catalog.db.
+# Non-fatal: exits 0 on any error so callers are never blocked.
 
 set -uo pipefail
 
@@ -15,18 +17,27 @@ MEDIA_DIR="$HOME/.local/share/mirror-os/media"
 LOG="$HOME/.local/share/mirror-os/catalog-bootstrap.log"
 SYSTEM_CATALOG="/usr/share/mirror-os/catalog.db"
 SYSTEM_ICONS="/usr/share/mirror-os/media/icons"
+# Tracks the sha256 of the last system catalog we successfully seeded/refreshed.
+# When a new image ships a different catalog.db, the hash changes and we refresh.
+CATALOG_HASH_FILE="$HOME/.local/share/mirror-os/.catalog-image-hash"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
-# ── Guard: only run on first login ────────────────────────────────────────────
-if [ -f "$CATALOG_DB" ]; then
-    log "catalog.db already exists — skipping bootstrap."
-    exit 0
-fi
-
+# ── Guard: skip if system catalog is absent or already current ────────────────
 if [ ! -f "$SYSTEM_CATALOG" ]; then
     log "WARNING: system catalog not found at $SYSTEM_CATALOG — skipping."
     exit 0
+fi
+
+SYSTEM_CATALOG_HASH=$(sha256sum "$SYSTEM_CATALOG" 2>/dev/null | cut -d' ' -f1 || echo "")
+
+if [ -f "$CATALOG_DB" ]; then
+    if [ -f "$CATALOG_HASH_FILE" ] && \
+       [ "$(cat "$CATALOG_HASH_FILE" 2>/dev/null)" = "$SYSTEM_CATALOG_HASH" ]; then
+        log "catalog.db current — skipping."
+        exit 0
+    fi
+    log "System catalog changed (image updated) — refreshing catalog and icons."
 fi
 
 log "=== Mirror OS catalog bootstrap starting ==="
@@ -40,22 +51,26 @@ if ! cp "$SYSTEM_CATALOG" "$CATALOG_DB"; then
 fi
 log "catalog.db ready ($(du -sh "$CATALOG_DB" | cut -f1))"
 
-# ── Copy icons ────────────────────────────────────────────────────────────────
+# ── Copy icons (Flatpak + Nix) ────────────────────────────────────────────────
 if [ -d "$SYSTEM_ICONS" ] && [ "$(ls -A "$SYSTEM_ICONS" 2>/dev/null)" ]; then
     log "Seeding icons from image..."
     cp -r "$SYSTEM_ICONS/." "$MEDIA_DIR/icons/"
     ICON_COUNT=$(ls "$MEDIA_DIR/icons/"*.png 2>/dev/null | wc -l)
     log "Icons ready: $ICON_COUNT files"
 
-    # Repopulate icon_local_path to point to the user's media directory
+    # Repopulate icon_local_path for Flatpak apps and Nix packages.
+    # The image ships catalog.db with all icon paths cleared; we re-derive them
+    # here so they point to the user's actual media directory.
     python3 - "$CATALOG_DB" "$MEDIA_DIR/icons" << 'PYEOF'
 import sqlite3, os, sys
 db_path, icons_dir = sys.argv[1], sys.argv[2]
 conn = sqlite3.connect(db_path, timeout=30)
-rows = conn.execute("SELECT app_id FROM flatpak_apps WHERE icon_local_path = ''").fetchall()
 updated = 0
 with conn:
-    for (app_id,) in rows:
+    # Flatpak apps
+    for (app_id,) in conn.execute(
+        "SELECT app_id FROM flatpak_apps WHERE icon_local_path = ''"
+    ).fetchall():
         p = os.path.join(icons_dir, f'{app_id}.png')
         if os.path.isfile(p) and os.path.getsize(p) > 0:
             conn.execute(
@@ -63,11 +78,28 @@ with conn:
                 (p, app_id)
             )
             updated += 1
+    # Nix packages (graceful if column absent in older schema)
+    try:
+        for (attr,) in conn.execute(
+            "SELECT attr FROM nix_packages WHERE icon_local_path = ''"
+        ).fetchall():
+            p = os.path.join(icons_dir, f'{attr}.png')
+            if os.path.isfile(p) and os.path.getsize(p) > 0:
+                conn.execute(
+                    "UPDATE nix_packages SET icon_local_path = ? WHERE attr = ?",
+                    (p, attr)
+                )
+                updated += 1
+    except Exception:
+        pass
 conn.close()
-print(f"  icon_local_path set for {updated} apps.")
+print(f"  icon_local_path set for {updated} apps/packages.")
 PYEOF
 else
     log "No system icons found — icons will populate on next catalog update."
 fi
+
+# ── Record hash so we skip on the next run unless the image changes ───────────
+echo "$SYSTEM_CATALOG_HASH" > "$CATALOG_HASH_FILE"
 
 log "=== Mirror OS catalog bootstrap complete ==="

@@ -13,6 +13,27 @@ set -uo pipefail
 
 log() { echo "[build-catalog] $*"; }
 
+# Skip if a pre-built catalog was injected into the image by the CI catalog job.
+# The files module copies files/usr/ → /usr/ before this script runs, so a
+# pre-built catalog.db and icons are already at /usr/share/mirror-os/ when CI
+# injects them. Detect by checking that both Flatpak and Nix data are present.
+if python3 - << 'PYEOF' 2>/dev/null; then
+import sqlite3, sys
+try:
+    conn = sqlite3.connect('/usr/share/mirror-os/catalog.db')
+    nix  = conn.execute('SELECT count(*) FROM nix_packages').fetchone()[0]
+    flat = conn.execute('SELECT count(*) FROM flatpak_apps').fetchone()[0]
+    conn.close()
+    sys.exit(0 if nix > 0 and flat > 0 else 1)
+except Exception:
+    sys.exit(1)
+PYEOF
+    FLAT_COUNT=$(python3 -c "import sqlite3; c=sqlite3.connect('/usr/share/mirror-os/catalog.db'); print(c.execute('SELECT count(*) FROM flatpak_apps').fetchone()[0])")
+    NIX_COUNT=$(python3 -c "import sqlite3; c=sqlite3.connect('/usr/share/mirror-os/catalog.db'); print(c.execute('SELECT count(*) FROM nix_packages').fetchone()[0])")
+    log "Pre-built catalog detected (${FLAT_COUNT} Flatpak, ${NIX_COUNT} Nix) — skipping local build."
+    exit 0
+fi
+
 log "Starting catalog build..."
 
 # ── Download Flathub AppStream metadata and icon cache ──────────────────────
