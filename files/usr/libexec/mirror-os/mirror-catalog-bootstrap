@@ -102,4 +102,14 @@ fi
 # ── Record hash so we skip on the next run unless the image changes ───────────
 echo "$SYSTEM_CATALOG_HASH" > "$CATALOG_HASH_FILE"
 
+# ── Bake HM options so the Software Center's "Configure" button works ────────
+# This queries the user's personal flake, so it can't be pre-computed in CI.
+# Run in the background so bootstrap returns quickly; the catalog is already
+# usable for browsing/installing without HM options.
+CATALOG_UPDATE="/usr/libexec/mirror-os/mirror-catalog-update"
+if [ -x "$CATALOG_UPDATE" ] && [ -f "$HOME/.config/home-manager/flake.nix" ]; then
+    log "Triggering HM options bake in background..."
+    "$CATALOG_UPDATE" --source hm-options &
+fi
+
 log "=== Mirror OS catalog bootstrap complete ==="

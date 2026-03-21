@@ -8,100 +8,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Pre-build job: construct the full app catalog (Flatpak + Nix + all icons) and
-  # upload as artifacts so the image build can bake them in directly.
+  # Download the pre-built catalog from the catalog-data repo's latest release.
+  # The catalog-data CI (daily) builds Flatpak + Nix catalog, extracts icons,
+  # and publishes catalog.db + icons.tar.zst as release artifacts.
   catalog:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - name: Checkout mirror-os
-        uses: actions/checkout@v4
-
-      # Compute week number for cache key (YYYY-WW).
-      # Cache expires weekly, aligned with nixpkgs release cadence.
-      - name: Compute week number
-        id: week
-        run: echo "week=$(date -u '+%Y-%W')" >> "$GITHUB_OUTPUT"
-
-      # Download Flathub AppStream XML + icon cache.
-      # mirror-catalog-update --source flatpak reads from this local cache.
-      - name: Install flatpak and download Flathub AppStream
+      - name: Download catalog from catalog-data release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get install -y flatpak
-          sudo flatpak remote-add --if-not-exists flathub \
-            https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak update --appstream --noninteractive
-
-      # Restore nix-icon incremental state across weekly builds.
-      # Includes nix-index-database (~92 MB) and state.json (which packages are done).
-      # On cache miss: nix-icons.py re-downloads the DB and re-processes changed packages.
-      - name: Restore nix-icon cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/catalog-ci/.local/share/mirror-os/media/.nix-icon-cache
-          key: nix-icon-cache-${{ steps.week.outputs.week }}
-
-      # Build Flatpak catalog + Flatpak icons.
-      # Reads from the local AppStream cache populated above — no additional network calls.
-      - name: Build Flatpak catalog and icons
-        run: |
-          mkdir -p /tmp/catalog-ci/.local/share/mirror-os
-          chmod +x files/usr/libexec/mirror-os/mirror-catalog-update
-          HOME=/tmp/catalog-ci files/usr/libexec/mirror-os/mirror-catalog-update \
-            --source flatpak
-
-      # Install Determinate Nix (needed for nix search and nix profile install).
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v14
-
-      # Build Nix package catalog (runs nix search nixpkgs '.*' --json, ~2 min).
-      - name: Build Nix catalog
-        run: |
-          HOME=/tmp/catalog-ci files/usr/libexec/mirror-os/mirror-catalog-update \
-            --source nix --no-media
-
-      # Extract Nix icons from NARs via nix-index-database + cache.nixos.org.
-      # First run: ~16 min. Cached run: ~2 min (only re-processes changed packages).
-      - name: Extract Nix icons
-        run: |
-          nix profile install nixpkgs#nix-index
-          python3 catalog-data/scripts/nix-icons.py \
-            --db /tmp/catalog-ci/.local/share/mirror-os/catalog.db \
-            --media-dir /tmp/catalog-ci/.local/share/mirror-os/media
-
-      # Clear build-time icon_local_path values before baking into the image.
-      # mirror-catalog-bootstrap re-derives these from the icons/ directory on
-      # first login and on each image update, pointing to the user's actual paths.
-      - name: Clear build-time icon paths
-        run: |
-          python3 - /tmp/catalog-ci/.local/share/mirror-os/catalog.db << 'EOF'
-          import sqlite3, sys
-          conn = sqlite3.connect(sys.argv[1], timeout=30)
-          with conn:
-              conn.execute("UPDATE flatpak_apps SET icon_local_path = ''")
-              try: conn.execute("UPDATE nix_packages SET icon_local_path = ''")
-              except Exception: pass
-          conn.close()
-          EOF
-
-      # Package catalog.db and all icons (Flatpak + Nix) as artifacts.
-      - name: Package catalog artifacts
-        run: |
-          cp /tmp/catalog-ci/.local/share/mirror-os/catalog.db catalog.db
-          tar --zstd -cf icons.tar.zst \
-            -C /tmp/catalog-ci/.local/share/mirror-os/media icons/
-          echo "catalog.db: $(du -sh catalog.db | cut -f1)"
-          echo "icons.tar.zst: $(du -sh icons.tar.zst | cut -f1)"
+          mkdir -p /tmp/catalog-artifacts
+          gh release download catalog-latest \
+            --repo mirror-os/catalog-data \
+            --dir /tmp/catalog-artifacts \
+            --pattern 'catalog.db' \
+            --pattern 'icons.tar.zst'
+          echo "catalog.db: $(du -sh /tmp/catalog-artifacts/catalog.db | cut -f1)"
+          echo "icons.tar.zst: $(du -sh /tmp/catalog-artifacts/icons.tar.zst | cut -f1)"
 
       - name: Upload catalog artifacts
         uses: actions/upload-artifact@v4
         with:
           name: catalog-artifacts
           path: |
-            catalog.db
-            icons.tar.zst
+            /tmp/catalog-artifacts/catalog.db
+            /tmp/catalog-artifacts/icons.tar.zst
           retention-days: 1
 
   build:

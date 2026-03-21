@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # mirror-catalog-update — Mirror OS app catalog database updater
-# Populates ~/.local/share/mirror-os/catalog.db (SQLite, WAL mode) with:
-#   - All Flathub apps from the local AppStream XML cache (no network required)
-#   - All nixpkgs packages from `nix search nixpkgs "" --json`
+#
+# Default mode (on-device):
+#   Downloads pre-built catalog.db + icons from the catalog-data GitHub release,
+#   then bakes user-specific Home Manager option schemas locally.
+#
+# Build mode (--build, used by catalog-data CI):
+#   Builds the catalog locally from Flatpak AppStream XML and nix search.
 #
 # Usage:
-#   mirror-catalog-update [--source flatpak|nix|all]
+#   mirror-catalog-update [--source all|hm-options] [--offline]
+#   mirror-catalog-update --build [--source flatpak|nix|nix-meta|hm-options|all] [--no-media]
 #
-# Run by mirror-os-catalog.timer (10 min after boot, then hourly).
+# Run by mirror-os-catalog.service (10 min after boot, then periodically).
 # Safe to run manually: flock prevents concurrent executions.
 
 set -uo pipefail
@@ -17,9 +22,14 @@ export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
 CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
 LOCK_FILE="/tmp/mirror-catalog-update.lock"
 LOG_FILE="$HOME/.local/share/mirror-os/catalog-update.log"
+MEDIA_DIR="$HOME/.local/share/mirror-os/media"
+
+# GitHub release URL for pre-built catalog (public, no auth needed)
+CATALOG_RELEASE_API="https://api.github.com/repos/mirror-os/catalog-data/releases/tags/catalog-latest"
+
+# Build-mode only
 APPSTREAM_GZ="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml.gz"
 APPSTREAM_XML="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml"
-MEDIA_DIR="$HOME/.local/share/mirror-os/media"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -40,24 +50,563 @@ fi
 
 SOURCE="all"
 NO_MEDIA=0
+BUILD_MODE=0
+OFFLINE=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --source) SOURCE="$2"; shift 2 ;;
+        --source)   SOURCE="$2"; shift 2 ;;
         --no-media) NO_MEDIA=1; shift ;;
-        *) echo "Usage: mirror-catalog-update [--source flatpak|nix|nix-meta|hm-options|all] [--no-media]" >&2; exit 1 ;;
+        --build)    BUILD_MODE=1; shift ;;
+        --offline)  OFFLINE=1; shift ;;
+        *) echo "Usage: mirror-catalog-update [--build] [--source flatpak|nix|nix-meta|hm-options|all] [--no-media] [--offline]" >&2; exit 1 ;;
     esac
 done
 
-case "$SOURCE" in
-    flatpak|nix|nix-meta|hm-options|all) ;;
-    *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
-esac
+if [ "$BUILD_MODE" -eq 1 ]; then
+    case "$SOURCE" in
+        flatpak|nix|nix-meta|hm-options|all) ;;
+        *) echo "mirror-catalog-update: unknown source '$SOURCE'" >&2; exit 1 ;;
+    esac
+else
+    case "$SOURCE" in
+        all|hm-options) ;;
+        *) echo "mirror-catalog-update: in download mode, --source must be 'all' or 'hm-options'" >&2; exit 1 ;;
+    esac
+fi
 
 # ── Ensure directories exist ─────────────────────────────────────────────────
 
 mkdir -p "$(dirname "$CATALOG_DB")"
 mkdir -p "$MEDIA_DIR/icons"
 mkdir -p "$MEDIA_DIR/screenshots"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Download mode (default) — fetch pre-built catalog from catalog-data release
+# ══════════════════════════════════════════════════════════════════════════════
+
+download_catalog() {
+    log "Checking for catalog updates from catalog-data release..."
+
+    if [ "$OFFLINE" -eq 1 ]; then
+        log "Offline mode — skipping catalog download."
+        return 0
+    fi
+
+    python3 - "$CATALOG_DB" "$MEDIA_DIR" "$CATALOG_RELEASE_API" << 'PYEOF'
+import sys, os, json, sqlite3, time, tarfile, tempfile
+import urllib.request, urllib.error
+
+db_path      = sys.argv[1]
+media_dir    = sys.argv[2]
+release_api  = sys.argv[3]
+icons_dir    = os.path.join(media_dir, 'icons')
+etag_file    = os.path.join(os.path.dirname(db_path), '.catalog-release-etag')
+
+UA = {'User-Agent': 'mirror-catalog-update/2.0'}
+
+def http_get(url, timeout=30, headers=None):
+    h = dict(UA)
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+# ── Check if release has changed (ETag) ──────────────────────────────────
+old_etag = ''
+if os.path.isfile(etag_file):
+    with open(etag_file) as f:
+        old_etag = f.read().strip()
+
+try:
+    resp = http_get(release_api, timeout=15)
+    new_etag = resp.headers.get('ETag', '')
+    release_data = json.loads(resp.read())
+except Exception as e:
+    print(f"Failed to fetch release info: {e}", flush=True)
+    sys.exit(1)
+
+if old_etag and new_etag and old_etag == new_etag:
+    print("Catalog release unchanged (ETag match) — skipping download.", flush=True)
+    sys.exit(0)
+
+# ── Find asset URLs ──────────────────────────────────────────────────────
+assets = {a['name']: a['browser_download_url'] for a in release_data.get('assets', [])}
+catalog_url = assets.get('catalog.db')
+icons_url   = assets.get('icons.tar.zst')
+
+if not catalog_url:
+    print("ERROR: catalog.db not found in release assets.", flush=True)
+    sys.exit(1)
+
+# ── Download catalog.db ──────────────────────────────────────────────────
+print("Downloading catalog.db...", flush=True)
+t0 = time.monotonic()
+try:
+    resp = http_get(catalog_url, timeout=120)
+    tmp_db = db_path + '.tmp'
+    with open(tmp_db, 'wb') as f:
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            f.write(chunk)
+    os.replace(tmp_db, db_path)
+    size_mb = os.path.getsize(db_path) / 1e6
+    print(f"  catalog.db downloaded ({size_mb:.1f} MB, {time.monotonic()-t0:.1f}s)", flush=True)
+except Exception as e:
+    print(f"Failed to download catalog.db: {e}", flush=True)
+    if os.path.isfile(tmp_db):
+        os.unlink(tmp_db)
+    sys.exit(1)
+
+# ── Download and extract icons ───────────────────────────────────────────
+if icons_url:
+    print("Downloading icons.tar.zst...", flush=True)
+    t0 = time.monotonic()
+    try:
+        resp = http_get(icons_url, timeout=300)
+        with tempfile.NamedTemporaryFile(suffix='.tar.zst', delete=False) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+        size_mb = os.path.getsize(tmp_path) / 1e6
+        print(f"  icons archive downloaded ({size_mb:.1f} MB, {time.monotonic()-t0:.1f}s)", flush=True)
+
+        # Extract using tar (zstd decompression requires external tool)
+        import subprocess
+        subprocess.run(
+            ['tar', '--zstd', '-xf', tmp_path, '-C', media_dir],
+            check=True, timeout=120,
+        )
+        os.unlink(tmp_path)
+        icon_count = len([f for f in os.listdir(icons_dir) if f.endswith('.png')]) if os.path.isdir(icons_dir) else 0
+        print(f"  {icon_count} icons extracted", flush=True)
+    except Exception as e:
+        print(f"Failed to download/extract icons: {e}", flush=True)
+        # Non-fatal — catalog.db is the critical artifact
+
+# ── Re-derive icon_local_path in the DB ──────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=30)
+updated = 0
+with conn:
+    # Flatpak apps
+    for (app_id,) in conn.execute(
+        "SELECT app_id FROM flatpak_apps WHERE icon_local_path = ''"
+    ).fetchall():
+        p = os.path.join(icons_dir, f'{app_id}.png')
+        if os.path.isfile(p) and os.path.getsize(p) > 0:
+            conn.execute(
+                "UPDATE flatpak_apps SET icon_local_path = ? WHERE app_id = ?",
+                (p, app_id)
+            )
+            updated += 1
+    # Nix packages
+    try:
+        for (attr,) in conn.execute(
+            "SELECT attr FROM nix_packages WHERE icon_local_path = ''"
+        ).fetchall():
+            p = os.path.join(icons_dir, f'{attr}.png')
+            if os.path.isfile(p) and os.path.getsize(p) > 0:
+                conn.execute(
+                    "UPDATE nix_packages SET icon_local_path = ? WHERE attr = ?",
+                    (p, attr)
+                )
+                updated += 1
+    except Exception:
+        pass
+conn.close()
+print(f"  icon_local_path set for {updated} apps/packages.", flush=True)
+
+# ── Save ETag for next run ───────────────────────────────────────────────
+if new_etag:
+    with open(etag_file, 'w') as f:
+        f.write(new_etag)
+
+print("Catalog download complete.", flush=True)
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "Catalog downloaded successfully."
+    else
+        log "Catalog download failed (exit $rc)."
+        return $rc
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Home Manager option schema baking (runs in both modes — user-specific)
+# ══════════════════════════════════════════════════════════════════════════════
+
+update_hm_options() {
+    log "Updating HM option schemas (programs_name detection + option baking)..."
+
+    if ! command -v nix &>/dev/null; then
+        log "Nix not available — skipping HM option update."
+        return 1
+    fi
+
+    local username home_dir hm_dir
+    username="${USER:-$(id -un)}"
+    home_dir="${HOME:-/home/$username}"
+    hm_dir="$home_dir/.config/home-manager"
+
+    if [ ! -f "$hm_dir/flake.nix" ]; then
+        log "Home Manager flake not found at $hm_dir/flake.nix — skipping HM option update."
+        return 1
+    fi
+
+    log "Querying available HM programs from $hm_dir ..."
+
+    python3 - "$CATALOG_DB" "$hm_dir" "$username" << 'PYEOF'
+import sys, json, sqlite3, subprocess, time, re, os
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+db_path   = sys.argv[1]
+hm_dir    = sys.argv[2]
+username  = sys.argv[3]
+
+# Worker count for parallel nix eval batches (CPU-heavy).
+# Override with MIRROR_NIX_WORKERS env var.
+_env_workers = os.environ.get('MIRROR_NIX_WORKERS', '')
+MAX_WORKERS = int(_env_workers) if _env_workers.isdigit() and int(_env_workers) > 0 \
+    else min(os.cpu_count() or 2, 3)
+
+# ── Nix expression that strips non-serialisable functions from option nodes ──
+# Used both in the batched expression and embedded directly in the --expr.
+SERIALIZE_OPTS_NIX = r"""
+  tryStr = v: if builtins.isString v then v else "";
+  serOpt = node: {
+    _type = "option";
+    description = tryStr (
+      if !(node ? description) then ""
+      else if builtins.isString node.description then node.description
+      else if builtins.isAttrs node.description then tryStr (node.description.text or "")
+      else ""
+    );
+    type = tryStr (
+      if node ? type && builtins.isAttrs node.type
+      then node.type.name or "unknown"
+      else "unknown"
+    );
+    defaultText = tryStr (
+      if node ? defaultText && builtins.isAttrs node.defaultText
+      then node.defaultText.text or ""
+      else ""
+    );
+    exampleText = tryStr (
+      let ex = node.example or null; in
+      if ex == null then ""
+      else if builtins.isAttrs ex && ex ? text then tryStr ex.text
+      else if builtins.isString ex then ex
+      else let r = builtins.tryEval (builtins.toJSON ex); in
+        if r.success then r.value else ""
+    );
+  };
+  serialize = node:
+    if !(builtins.isAttrs node) then {}
+    else if node ? _type && node._type == "option" then serOpt node
+    else builtins.mapAttrs
+      (_k: v: serialize v)
+      (builtins.filterAttrs (k: _: builtins.match "_.*" k == null) node);
+"""
+
+# Known mismatches where nixpkgs attr ≠ HM module name.
+# NOT a curated app list — only true structural exceptions.
+PROGRAMS_OVERRIDES = {
+    "openssh": "ssh",
+}
+
+# ── Schema migration ──────────────────────────────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=60)
+try:
+    conn.execute("ALTER TABLE nix_packages ADD COLUMN hm_options_json TEXT")
+    conn.commit()
+except Exception:
+    pass  # column already exists
+
+# ── Step 1: get all programs.* names from HM ─────────────────────────────────
+flake_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs"
+t0 = time.monotonic()
+try:
+    result = subprocess.run(
+        ["nix", "eval", "--json", "--impure",
+         "--extra-experimental-features", "nix-command flakes",
+         "--apply", "builtins.attrNames",
+         flake_ref],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        print(f"nix eval for programs list failed: {result.stderr.strip()[:300]}", flush=True)
+        conn.close()
+        sys.exit(1)
+    hm_programs = set(json.loads(result.stdout))
+    print(f"Found {len(hm_programs)} HM program modules in {time.monotonic()-t0:.1f}s.", flush=True)
+except subprocess.TimeoutExpired:
+    print("nix eval for programs list timed out — skipping.", flush=True)
+    conn.close()
+    sys.exit(1)
+except Exception as e:
+    print(f"Error fetching HM programs list: {e}", flush=True)
+    conn.close()
+    sys.exit(1)
+
+# ── Step 2: match nix_packages to HM programs ────────────────────────────────
+attrs = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
+matched = []  # (attr, programs_name)
+
+def _normalize_attr(s: str) -> str:
+    """Lowercase + strip non-alphanumeric for loose attr/pname comparison.
+    Used to detect variant packages (e.g. fishMinimal vs fish) where the
+    pname fallback should not apply."""
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+for attr, pname in attrs:
+    # Apply overrides first
+    if attr in PROGRAMS_OVERRIDES:
+        matched.append((attr, PROGRAMS_OVERRIDES[attr]))
+        continue
+    # Direct attr match
+    if attr in hm_programs:
+        matched.append((attr, attr))
+        continue
+    # pname fallback: only when attr and pname normalize to the same token.
+    # Skip for variant packages like fishMinimal (attr) vs fish (pname) —
+    # they share the pname but have no programs.<attr> HM module of their own.
+    if pname and pname in hm_programs and _normalize_attr(attr) == _normalize_attr(pname):
+        matched.append((attr, pname))
+        continue
+
+print(f"Matched {len(matched)} packages to HM program modules.", flush=True)
+
+# Update programs_name for all matched packages; clear for unmatched
+with conn:
+    conn.execute("UPDATE nix_packages SET programs_name = ''")
+    conn.executemany(
+        "UPDATE nix_packages SET programs_name = ? WHERE attr = ?",
+        [(pm, a) for a, pm in matched],
+    )
+
+# ── Step 3: batched + parallel HM option schema evaluation ───────────────────
+# Instead of one nix eval per program, batch multiple programs into a single
+# nix expression that amortizes the ~1-2s flake evaluation startup cost.
+# Then run batches in parallel with ThreadPoolExecutor.
+
+BATCH_SIZE = 15
+BATCH_TIMEOUT = 180  # seconds per batch
+
+def eval_hm_batch(batch):
+    """Evaluate a batch of (attr, programs_name) pairs in a single nix eval.
+    Returns dict mapping attr -> opts_json string, or empty on failure."""
+    names_nix = ' '.join(f'"{pm}"' for _, pm in batch)
+    expr = f"""
+let
+  hm = (builtins.getFlake "{hm_dir}").homeConfigurations.{username};
+  {SERIALIZE_OPTS_NIX}
+  names = [ {names_nix} ];
+in builtins.listToAttrs (map (n: {{
+  name = n;
+  value = let r = builtins.tryEval (serialize hm.options.programs.${{n}});
+          in if r.success then r.value else null;
+}}) names)
+"""
+    try:
+        result = subprocess.run(
+            ["nix", "eval", "--json", "--impure",
+             "--extra-experimental-features", "nix-command flakes",
+             "--expr", expr],
+            capture_output=True, text=True, timeout=BATCH_TIMEOUT,
+        )
+        if result.returncode != 0:
+            snippet = result.stderr.strip()[:300]
+            print(f"  Batch failed ({len(batch)} programs): {snippet}", flush=True)
+            return {}
+        data = json.loads(result.stdout)
+        # Map programs_name back to attr for DB update
+        pm_to_attr = {pm: attr for attr, pm in batch}
+        out = {}
+        for pm, opts in data.items():
+            if opts is not None and pm in pm_to_attr:
+                out[pm_to_attr[pm]] = json.dumps(opts)
+        return out
+    except subprocess.TimeoutExpired:
+        print(f"  Batch timed out ({len(batch)} programs) — skipping", flush=True)
+        return {}
+    except Exception as e:
+        print(f"  Batch error: {e}", flush=True)
+        return {}
+
+total = len(matched)
+success = 0
+t_start = time.monotonic()
+
+# Split into batches
+batches = [matched[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+n_batches = len(batches)
+print(f"Baking HM option schemas for {total} packages in {n_batches} batches "
+      f"({MAX_WORKERS} workers)...", flush=True)
+
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    future_to_idx = {pool.submit(eval_hm_batch, batch): i
+                     for i, batch in enumerate(batches)}
+    for future in as_completed(future_to_idx):
+        bi = future_to_idx[future]
+        results = future.result()
+        if results:
+            with conn:
+                for attr, opts_json in results.items():
+                    conn.execute(
+                        "UPDATE nix_packages SET hm_options_json = ? WHERE attr = ?",
+                        (opts_json, attr),
+                    )
+            success += len(results)
+        elapsed = time.monotonic() - t_start
+        done = sum(1 for f in future_to_idx if future_to_idx[f] <= bi or f.done())
+        print(f"  Batch {bi+1}/{n_batches} done ({len(results)} ok), "
+              f"{elapsed:.0f}s elapsed...", flush=True)
+
+# Record in catalog_meta
+now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+with conn:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS catalog_meta (
+            source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute(
+        "INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count) VALUES ('hm-options', ?, ?)",
+        (now, success),
+    )
+conn.close()
+
+elapsed_total = time.monotonic() - t_start
+print(f"HM options baked: {success}/{total} programs in {elapsed_total:.1f}s.")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "HM option schemas updated successfully."
+    else
+        log "HM option schema update failed (exit $rc)."
+        return $rc
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cross-source app_map builder (runs in both modes)
+# ══════════════════════════════════════════════════════════════════════════════
+
+build_app_map() {
+    log "Building cross-source app_map..."
+
+    python3 - "$CATALOG_DB" << 'PYEOF'
+import sys, sqlite3, re
+
+db_path = sys.argv[1]
+
+# ── Slug derivation constants ────────────────────────────────────────────────
+KNOWN_TLDS  = {'com','org','net','io','app','dev','me','co','edu','gov','uk','de','fr'}
+KNOWN_HOSTS = {'github','gitlab','bitbucket','codeberg','sr'}
+KNOWN_ORGS  = {'gnome','kde','xfce','freedesktop','mozilla','apache','microsoft'}
+TRAIL_SFXS  = {'client','desktop','app','stable','beta','nightly','gtk','gtk3','gtk4','bin'}
+
+def flatpak_slug(app_id):
+    parts = app_id.lower().split('.')
+    if parts and parts[0] in KNOWN_TLDS:              parts = parts[1:]
+    if parts and parts[0] in KNOWN_HOSTS:             parts = parts[1:]
+    if len(parts) > 1 and parts[0] in KNOWN_ORGS:    parts = parts[1:]
+    while len(parts) > 1 and parts[-1] in TRAIL_SFXS: parts = parts[:-1]
+    # Deduplicate consecutive identical parts so com.slack.Slack → 'slack', not 'slack-slack'
+    deduped = [parts[0]] if parts else []
+    for p in parts[1:]:
+        if p != deduped[-1]:
+            deduped.append(p)
+    parts = deduped
+    slug = '-'.join(parts)
+    slug = re.sub(r'[^a-z0-9-]', '-', slug)
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    return slug or app_id.lower().replace('.', '-')
+
+def nix_slug(attr):
+    # Skip language sub-namespace packages (not user-facing apps)
+    if re.match(r'^(python|perl|ruby|lua|node|haskell)', attr):
+        return ''
+    s = attr.lower()
+    for sfx in ('-git', '-bin', '-unwrapped', '-wrapped'):
+        if s.endswith(sfx):
+            s = s[:-len(sfx)]
+    return s
+
+# ── Load both catalogs ───────────────────────────────────────────────────────
+conn = sqlite3.connect(db_path, timeout=30)
+
+flatpak_rows = conn.execute("SELECT app_id, name FROM flatpak_apps").fetchall()
+nix_rows     = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
+
+# Build slug → (id, name) dicts
+fp_slugs = {}
+for app_id, name in flatpak_rows:
+    s = flatpak_slug(app_id)
+    if s and s not in fp_slugs:
+        fp_slugs[s] = (app_id, name)
+
+nix_slugs = {}
+for attr, pname in nix_rows:
+    s = nix_slug(attr)
+    if s and s not in nix_slugs:
+        nix_slugs[s] = (attr, pname)
+
+# ── Build unified rows ───────────────────────────────────────────────────────
+all_slugs = set(fp_slugs) | set(nix_slugs)
+map_rows = []
+for slug in sorted(all_slugs):
+    fp_id, fp_name = fp_slugs.get(slug, (None, None))
+    nix_attr, nix_name = nix_slugs.get(slug, (None, None))
+    display_name = fp_name or nix_name or slug
+    preferred = 'flatpak' if fp_id else 'nix'
+    map_rows.append((slug, fp_id, nix_attr, display_name, preferred))
+
+# ── Migration guard ───────────────────────────────────────────────────────────
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass
+
+# ── Replace app_map ──────────────────────────────────────────────────────────
+with conn:
+    conn.execute("DELETE FROM app_map")
+    conn.executemany(
+        "INSERT INTO app_map(slug, flatpak_id, nix_attr, display_name, preferred_source) VALUES (?,?,?,?,?)",
+        map_rows,
+    )
+
+conn.close()
+
+both  = sum(1 for _, fp, nx, _, _ in map_rows if fp and nx)
+total = len(map_rows)
+print(f"app_map built: {total} slugs ({both} cross-source matches).")
+PYEOF
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "app_map built successfully."
+    else
+        log "app_map build failed (exit $rc)."
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Build-mode functions (--build only, used by catalog-data CI)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if [ "$BUILD_MODE" -eq 1 ]; then
 
 # ── Flatpak catalog update ───────────────────────────────────────────────────
 
@@ -749,10 +1298,6 @@ PYEOF
 }
 
 # ── Nix metadata enrichment ──────────────────────────────────────────────────
-# Runs batched `nix eval` to pull full meta (longDescription, homepage, license,
-# maintainers) for every package in nix_packages.  Much slower than nix search
-# (~20-40 min on first run) so it runs as a separate step and caches by nixpkgs
-# revision — subsequent calls with the same nixpkgs rev return immediately.
 
 update_nix_meta() {
     log "Checking Nix metadata enrichment..."
@@ -945,419 +1490,76 @@ PYEOF
     fi
 }
 
-# ── Cross-source app_map builder ─────────────────────────────────────────────
+fi  # end BUILD_MODE functions
 
-build_app_map() {
-    log "Building cross-source app_map..."
+# ══════════════════════════════════════════════════════════════════════════════
+# Orchestration
+# ══════════════════════════════════════════════════════════════════════════════
 
-    python3 - "$CATALOG_DB" << 'PYEOF'
-import sys, sqlite3, re
+log "Starting catalog update (mode: $([ $BUILD_MODE -eq 1 ] && echo build || echo download), source: $SOURCE)..."
 
-db_path = sys.argv[1]
-
-# ── Slug derivation constants ────────────────────────────────────────────────
-KNOWN_TLDS  = {'com','org','net','io','app','dev','me','co','edu','gov','uk','de','fr'}
-KNOWN_HOSTS = {'github','gitlab','bitbucket','codeberg','sr'}
-KNOWN_ORGS  = {'gnome','kde','xfce','freedesktop','mozilla','apache','microsoft'}
-TRAIL_SFXS  = {'client','desktop','app','stable','beta','nightly','gtk','gtk3','gtk4','bin'}
-
-def flatpak_slug(app_id):
-    parts = app_id.lower().split('.')
-    if parts and parts[0] in KNOWN_TLDS:              parts = parts[1:]
-    if parts and parts[0] in KNOWN_HOSTS:             parts = parts[1:]
-    if len(parts) > 1 and parts[0] in KNOWN_ORGS:    parts = parts[1:]
-    while len(parts) > 1 and parts[-1] in TRAIL_SFXS: parts = parts[:-1]
-    # Deduplicate consecutive identical parts so com.slack.Slack → 'slack', not 'slack-slack'
-    deduped = [parts[0]] if parts else []
-    for p in parts[1:]:
-        if p != deduped[-1]:
-            deduped.append(p)
-    parts = deduped
-    slug = '-'.join(parts)
-    slug = re.sub(r'[^a-z0-9-]', '-', slug)
-    slug = re.sub(r'-+', '-', slug).strip('-')
-    return slug or app_id.lower().replace('.', '-')
-
-def nix_slug(attr):
-    # Skip language sub-namespace packages (not user-facing apps)
-    if re.match(r'^(python|perl|ruby|lua|node|haskell)', attr):
-        return ''
-    s = attr.lower()
-    for sfx in ('-git', '-bin', '-unwrapped', '-wrapped'):
-        if s.endswith(sfx):
-            s = s[:-len(sfx)]
-    return s
-
-# ── Load both catalogs ───────────────────────────────────────────────────────
-conn = sqlite3.connect(db_path, timeout=30)
-
-flatpak_rows = conn.execute("SELECT app_id, name FROM flatpak_apps").fetchall()
-nix_rows     = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
-
-# Build slug → (id, name) dicts
-fp_slugs = {}
-for app_id, name in flatpak_rows:
-    s = flatpak_slug(app_id)
-    if s and s not in fp_slugs:
-        fp_slugs[s] = (app_id, name)
-
-nix_slugs = {}
-for attr, pname in nix_rows:
-    s = nix_slug(attr)
-    if s and s not in nix_slugs:
-        nix_slugs[s] = (attr, pname)
-
-# ── Build unified rows ───────────────────────────────────────────────────────
-all_slugs = set(fp_slugs) | set(nix_slugs)
-map_rows = []
-for slug in sorted(all_slugs):
-    fp_id, fp_name = fp_slugs.get(slug, (None, None))
-    nix_attr, nix_name = nix_slugs.get(slug, (None, None))
-    display_name = fp_name or nix_name or slug
-    preferred = 'flatpak' if fp_id else 'nix'
-    map_rows.append((slug, fp_id, nix_attr, display_name, preferred))
-
-# ── Migration guard ───────────────────────────────────────────────────────────
-for col_def in [
-    "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
-    "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
-]:
-    try:
-        conn.execute(col_def)
-    except Exception:
-        pass
-
-# ── Replace app_map ──────────────────────────────────────────────────────────
-with conn:
-    conn.execute("DELETE FROM app_map")
-    conn.executemany(
-        "INSERT INTO app_map(slug, flatpak_id, nix_attr, display_name, preferred_source) VALUES (?,?,?,?,?)",
-        map_rows,
-    )
-
-conn.close()
-
-both  = sum(1 for _, fp, nx, _, _ in map_rows if fp and nx)
-total = len(map_rows)
-print(f"app_map built: {total} slugs ({both} cross-source matches).")
-PYEOF
-    local rc=$?
-    if [ $rc -eq 0 ]; then
-        log "app_map built successfully."
-    else
-        log "app_map build failed (exit $rc)."
-    fi
-}
-
-# ── Home Manager option schema baking ────────────────────────────────────────
-# Detects which nix_packages have a matching HM programs.* module by querying
-# the user's live home-manager flake (one nix eval for the full programs list,
-# then one eval per matched package for the option schema).
-# Stores the detected programs_name and the serialised option JSON in catalog.db.
-# Safe to run standalone: mirror-catalog-update --source hm-options
-
-update_hm_options() {
-    log "Updating HM option schemas (programs_name detection + option baking)..."
-
-    if ! command -v nix &>/dev/null; then
-        log "Nix not available — skipping HM option update."
-        return 1
-    fi
-
-    local username home_dir hm_dir
-    username="${USER:-$(id -un)}"
-    home_dir="${HOME:-/home/$username}"
-    hm_dir="$home_dir/.config/home-manager"
-
-    if [ ! -f "$hm_dir/flake.nix" ]; then
-        log "Home Manager flake not found at $hm_dir/flake.nix — skipping HM option update."
-        return 1
-    fi
-
-    log "Querying available HM programs from $hm_dir ..."
-
-    python3 - "$CATALOG_DB" "$hm_dir" "$username" << 'PYEOF'
-import sys, json, sqlite3, subprocess, time, re, os
-from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-db_path   = sys.argv[1]
-hm_dir    = sys.argv[2]
-username  = sys.argv[3]
-
-# Worker count for parallel nix eval batches (CPU-heavy).
-# Override with MIRROR_NIX_WORKERS env var.
-_env_workers = os.environ.get('MIRROR_NIX_WORKERS', '')
-MAX_WORKERS = int(_env_workers) if _env_workers.isdigit() and int(_env_workers) > 0 \
-    else min(os.cpu_count() or 2, 3)
-
-# ── Nix expression that strips non-serialisable functions from option nodes ──
-# Used both in the batched expression and embedded directly in the --expr.
-SERIALIZE_OPTS_NIX = r"""
-  tryStr = v: if builtins.isString v then v else "";
-  serOpt = node: {
-    _type = "option";
-    description = tryStr (
-      if !(node ? description) then ""
-      else if builtins.isString node.description then node.description
-      else if builtins.isAttrs node.description then tryStr (node.description.text or "")
-      else ""
-    );
-    type = tryStr (
-      if node ? type && builtins.isAttrs node.type
-      then node.type.name or "unknown"
-      else "unknown"
-    );
-    defaultText = tryStr (
-      if node ? defaultText && builtins.isAttrs node.defaultText
-      then node.defaultText.text or ""
-      else ""
-    );
-    exampleText = tryStr (
-      let ex = node.example or null; in
-      if ex == null then ""
-      else if builtins.isAttrs ex && ex ? text then tryStr ex.text
-      else if builtins.isString ex then ex
-      else let r = builtins.tryEval (builtins.toJSON ex); in
-        if r.success then r.value else ""
-    );
-  };
-  serialize = node:
-    if !(builtins.isAttrs node) then {}
-    else if node ? _type && node._type == "option" then serOpt node
-    else builtins.mapAttrs
-      (_k: v: serialize v)
-      (builtins.filterAttrs (k: _: builtins.match "_.*" k == null) node);
-"""
-
-# Known mismatches where nixpkgs attr ≠ HM module name.
-# NOT a curated app list — only true structural exceptions.
-PROGRAMS_OVERRIDES = {
-    "openssh": "ssh",
-}
-
-# ── Schema migration ──────────────────────────────────────────────────────────
-conn = sqlite3.connect(db_path, timeout=60)
-try:
-    conn.execute("ALTER TABLE nix_packages ADD COLUMN hm_options_json TEXT")
-    conn.commit()
-except Exception:
-    pass  # column already exists
-
-# ── Step 1: get all programs.* names from HM ─────────────────────────────────
-flake_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs"
-t0 = time.monotonic()
-try:
-    result = subprocess.run(
-        ["nix", "eval", "--json", "--impure",
-         "--extra-experimental-features", "nix-command flakes",
-         "--apply", "builtins.attrNames",
-         flake_ref],
-        capture_output=True, text=True, timeout=120,
-    )
-    if result.returncode != 0:
-        print(f"nix eval for programs list failed: {result.stderr.strip()[:300]}", flush=True)
-        conn.close()
-        sys.exit(1)
-    hm_programs = set(json.loads(result.stdout))
-    print(f"Found {len(hm_programs)} HM program modules in {time.monotonic()-t0:.1f}s.", flush=True)
-except subprocess.TimeoutExpired:
-    print("nix eval for programs list timed out — skipping.", flush=True)
-    conn.close()
-    sys.exit(1)
-except Exception as e:
-    print(f"Error fetching HM programs list: {e}", flush=True)
-    conn.close()
-    sys.exit(1)
-
-# ── Step 2: match nix_packages to HM programs ────────────────────────────────
-attrs = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
-matched = []  # (attr, programs_name)
-
-def _normalize_attr(s: str) -> str:
-    """Lowercase + strip non-alphanumeric for loose attr/pname comparison.
-    Used to detect variant packages (e.g. fishMinimal vs fish) where the
-    pname fallback should not apply."""
-    return re.sub(r'[^a-z0-9]', '', s.lower())
-
-for attr, pname in attrs:
-    # Apply overrides first
-    if attr in PROGRAMS_OVERRIDES:
-        matched.append((attr, PROGRAMS_OVERRIDES[attr]))
-        continue
-    # Direct attr match
-    if attr in hm_programs:
-        matched.append((attr, attr))
-        continue
-    # pname fallback: only when attr and pname normalize to the same token.
-    # Skip for variant packages like fishMinimal (attr) vs fish (pname) —
-    # they share the pname but have no programs.<attr> HM module of their own.
-    if pname and pname in hm_programs and _normalize_attr(attr) == _normalize_attr(pname):
-        matched.append((attr, pname))
-        continue
-
-print(f"Matched {len(matched)} packages to HM program modules.", flush=True)
-
-# Update programs_name for all matched packages; clear for unmatched
-with conn:
-    conn.execute("UPDATE nix_packages SET programs_name = ''")
-    conn.executemany(
-        "UPDATE nix_packages SET programs_name = ? WHERE attr = ?",
-        [(pm, a) for a, pm in matched],
-    )
-
-# ── Step 3: batched + parallel HM option schema evaluation ───────────────────
-# Instead of one nix eval per program, batch multiple programs into a single
-# nix expression that amortizes the ~1-2s flake evaluation startup cost.
-# Then run batches in parallel with ThreadPoolExecutor.
-
-BATCH_SIZE = 15
-BATCH_TIMEOUT = 180  # seconds per batch
-
-def eval_hm_batch(batch):
-    """Evaluate a batch of (attr, programs_name) pairs in a single nix eval.
-    Returns dict mapping attr -> opts_json string, or empty on failure."""
-    names_nix = ' '.join(f'"{pm}"' for _, pm in batch)
-    expr = f"""
-let
-  hm = (builtins.getFlake "{hm_dir}").homeConfigurations.{username};
-  {SERIALIZE_OPTS_NIX}
-  names = [ {names_nix} ];
-in builtins.listToAttrs (map (n: {{
-  name = n;
-  value = let r = builtins.tryEval (serialize hm.options.programs.${{n}});
-          in if r.success then r.value else null;
-}}) names)
-"""
-    try:
-        result = subprocess.run(
-            ["nix", "eval", "--json", "--impure",
-             "--extra-experimental-features", "nix-command flakes",
-             "--expr", expr],
-            capture_output=True, text=True, timeout=BATCH_TIMEOUT,
-        )
-        if result.returncode != 0:
-            snippet = result.stderr.strip()[:300]
-            print(f"  Batch failed ({len(batch)} programs): {snippet}", flush=True)
-            return {}
-        data = json.loads(result.stdout)
-        # Map programs_name back to attr for DB update
-        pm_to_attr = {pm: attr for attr, pm in batch}
-        out = {}
-        for pm, opts in data.items():
-            if opts is not None and pm in pm_to_attr:
-                out[pm_to_attr[pm]] = json.dumps(opts)
-        return out
-    except subprocess.TimeoutExpired:
-        print(f"  Batch timed out ({len(batch)} programs) — skipping", flush=True)
-        return {}
-    except Exception as e:
-        print(f"  Batch error: {e}", flush=True)
-        return {}
-
-total = len(matched)
-success = 0
-t_start = time.monotonic()
-
-# Split into batches
-batches = [matched[i:i+BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
-n_batches = len(batches)
-print(f"Baking HM option schemas for {total} packages in {n_batches} batches "
-      f"({MAX_WORKERS} workers)...", flush=True)
-
-with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-    future_to_idx = {pool.submit(eval_hm_batch, batch): i
-                     for i, batch in enumerate(batches)}
-    for future in as_completed(future_to_idx):
-        bi = future_to_idx[future]
-        results = future.result()
-        if results:
-            with conn:
-                for attr, opts_json in results.items():
-                    conn.execute(
-                        "UPDATE nix_packages SET hm_options_json = ? WHERE attr = ?",
-                        (opts_json, attr),
-                    )
-            success += len(results)
-        elapsed = time.monotonic() - t_start
-        done = sum(1 for f in future_to_idx if future_to_idx[f] <= bi or f.done())
-        print(f"  Batch {bi+1}/{n_batches} done ({len(results)} ok), "
-              f"{elapsed:.0f}s elapsed...", flush=True)
-
-# Record in catalog_meta
-now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-with conn:
-    conn.execute(
-        "INSERT OR REPLACE INTO catalog_meta(source, updated_at, row_count) VALUES ('hm-options', ?, ?)",
-        (now, success),
-    )
-conn.close()
-
-elapsed_total = time.monotonic() - t_start
-print(f"HM options baked: {success}/{total} programs in {elapsed_total:.1f}s.")
-PYEOF
-    local rc=$?
-    if [ $rc -eq 0 ]; then
-        log "HM option schemas updated successfully."
-    else
-        log "HM option schema update failed (exit $rc)."
-        return $rc
-    fi
-}
-
-# ── Run ──────────────────────────────────────────────────────────────────────
-
-log "Starting catalog update (source: $SOURCE, media: $([ $NO_MEDIA -eq 1 ] && echo skip || echo enabled))..."
-
-case "$SOURCE" in
-    flatpak)
-        update_flatpak || true
-        if [ $NO_MEDIA -eq 0 ]; then
-            cache_flatpak_media || true
-        else
-            log "Skipping media download (--no-media)."
-        fi
-        build_app_map
-        ;;
-    nix)
-        update_nix      || true
-        update_nix_meta || true
-        build_app_map
-        ;;
-    nix-meta)
-        update_nix_meta || true
-        ;;
-    hm-options)
-        update_hm_options || true
-        ;;
-    all)
-        # Flatpak and Nix pipelines write to independent tables — run in parallel.
-        (
+if [ "$BUILD_MODE" -eq 1 ]; then
+    # ── Build mode (catalog-data CI) ─────────────────────────────────────────
+    case "$SOURCE" in
+        flatpak)
             update_flatpak || true
             if [ $NO_MEDIA -eq 0 ]; then
                 cache_flatpak_media || true
             else
                 log "Skipping media download (--no-media)."
             fi
-        ) &
-        flatpak_pid=$!
+            build_app_map
+            ;;
+        nix)
+            update_nix      || true
+            update_nix_meta || true
+            build_app_map
+            ;;
+        nix-meta)
+            update_nix_meta || true
+            ;;
+        hm-options)
+            update_hm_options || true
+            ;;
+        all)
+            # Flatpak and Nix pipelines write to independent tables — run in parallel.
+            (
+                update_flatpak || true
+                if [ $NO_MEDIA -eq 0 ]; then
+                    cache_flatpak_media || true
+                else
+                    log "Skipping media download (--no-media)."
+                fi
+            ) &
+            flatpak_pid=$!
 
-        (
-            update_nix || true
-            # nix-meta and hm-options update different columns — run in parallel
-            update_nix_meta &
-            meta_pid=$!
-            update_hm_options &
-            hm_pid=$!
-            wait $meta_pid $hm_pid
-        ) &
-        nix_pid=$!
+            (
+                update_nix || true
+                # nix-meta and hm-options update different columns — run in parallel
+                update_nix_meta &
+                meta_pid=$!
+                update_hm_options &
+                hm_pid=$!
+                wait $meta_pid $hm_pid
+            ) &
+            nix_pid=$!
 
-        wait $flatpak_pid $nix_pid
-        build_app_map
-        ;;
-esac
+            wait $flatpak_pid $nix_pid
+            build_app_map
+            ;;
+    esac
+else
+    # ── Download mode (on-device, default) ───────────────────────────────────
+    case "$SOURCE" in
+        all)
+            download_catalog || true
+            build_app_map    || true
+            update_hm_options || true
+            ;;
+        hm-options)
+            update_hm_options || true
+            ;;
+    esac
+fi
 
 log "Catalog update complete."
