@@ -190,6 +190,14 @@ if icons_url:
 
 # ── Re-derive icon_local_path in the DB ──────────────────────────────────
 conn = sqlite3.connect(db_path, timeout=30)
+# Clear any stale build-time paths — the downloaded catalog.db may contain
+# CI paths (e.g. /tmp/catalog-work/...) that don't exist on this machine.
+with conn:
+    conn.execute("UPDATE flatpak_apps SET icon_local_path = ''")
+    try:
+        conn.execute("UPDATE nix_packages SET icon_local_path = ''")
+    except Exception:
+        pass
 updated = 0
 with conn:
     # Flatpak apps
@@ -234,6 +242,65 @@ PYEOF
         log "Catalog download failed (exit $rc)."
         return $rc
     fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Generate pending media downloads from downloaded catalog.db
+# ══════════════════════════════════════════════════════════════════════════════
+
+generate_pending_downloads() {
+    log "Scanning for missing media (icons + screenshots)..."
+
+    python3 - "$CATALOG_DB" "$MEDIA_DIR" << 'PYEOF'
+import json, sqlite3, os, sys
+
+db_path   = sys.argv[1]
+media_dir = sys.argv[2]
+icons_dir   = os.path.join(media_dir, 'icons')
+ss_base_dir = os.path.join(media_dir, 'screenshots')
+pending_file = os.path.join(media_dir, '.pending_downloads.json')
+
+os.makedirs(icons_dir, exist_ok=True)
+os.makedirs(ss_base_dir, exist_ok=True)
+
+conn = sqlite3.connect(db_path, timeout=30)
+pending_icons = []
+pending_screenshots = []
+
+for app_id, icon_name, ss_json in conn.execute(
+    "SELECT app_id, icon_name, screenshots FROM flatpak_apps"
+):
+    # Check if icon is missing on disk
+    icon_path = os.path.join(icons_dir, f'{app_id}.png')
+    if icon_name and not (os.path.isfile(icon_path) and os.path.getsize(icon_path) > 0):
+        url = f'https://dl.flathub.org/repo/appstream/x86_64/icons/128x128/{icon_name}.png'
+        pending_icons.append([app_id, url])
+
+    # Check screenshots — queue app if any screenshot is not cached locally
+    screenshots = json.loads(ss_json) if ss_json and ss_json != '[]' else []
+    if screenshots:
+        ss_dir = os.path.join(ss_base_dir, app_id)
+        need = False
+        for i, ss in enumerate(screenshots):
+            lp = ss.get('local_path', '')
+            if not lp or not (os.path.isfile(lp) and os.path.getsize(lp) > 0):
+                need = True
+                break
+        if need:
+            pending_screenshots.append([app_id, [
+                {k: v for k, v in s.items() if k != 'local_path'} for s in screenshots
+            ]])
+
+conn.close()
+
+if pending_icons or pending_screenshots:
+    out = {'icons': pending_icons, 'screenshots': pending_screenshots}
+    with open(pending_file, 'w') as f:
+        json.dump(out, f)
+    print(f"Queued {len(pending_icons)} icons + {len(pending_screenshots)} apps for screenshot download.")
+else:
+    print("All media already cached.")
+PYEOF
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1553,6 +1620,10 @@ else
     case "$SOURCE" in
         all)
             download_catalog || true
+            if [ $NO_MEDIA -eq 0 ]; then
+                generate_pending_downloads || true
+                cache_flatpak_media || true
+            fi
             build_app_map    || true
             update_hm_options || true
             ;;

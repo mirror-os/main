@@ -65,6 +65,13 @@ if [ -d "$SYSTEM_ICONS" ] && [ "$(ls -A "$SYSTEM_ICONS" 2>/dev/null)" ]; then
 import sqlite3, os, sys
 db_path, icons_dir = sys.argv[1], sys.argv[2]
 conn = sqlite3.connect(db_path, timeout=30)
+# Clear any stale build-time icon paths from the image's catalog.db
+with conn:
+    conn.execute("UPDATE flatpak_apps SET icon_local_path = ''")
+    try:
+        conn.execute("UPDATE nix_packages SET icon_local_path = ''")
+    except Exception:
+        pass
 updated = 0
 with conn:
     # Flatpak apps
