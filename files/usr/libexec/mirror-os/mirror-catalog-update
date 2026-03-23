@@ -1304,6 +1304,16 @@ for attr, (_, val) in best.items():
             attr.endswith('-wrapper')):
         continue
     pname = val.get('pname', attr)
+    # Skip _-prefixed attrs that represent unrelated library packages (e.g. SBCL
+    # Quicklisp packages stored as _1am, _2d-array, _40ants-doc-project with
+    # pname='sbcl').  Nix legitimately uses _ for apps whose names start with a
+    # digit (_010editor → pname 010editor, _1password-gui → pname 1password), so
+    # keep those by requiring the attr stem to share a substring with pname.
+    if attr.startswith('_'):
+        _stem = attr[1:].lower().replace('-', '').replace('_', '')
+        _pnorm = pname.lower().replace('-', '').replace('_', '')
+        if _stem not in _pnorm and _pnorm not in _stem:
+            continue
     # Skip source archives that Nix treats as packages (e.g. android-ndk-r20.zip)
     _ARCHIVE_EXTS = ('.zip', '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz',
                      '.jar', '.whl', '.deb', '.rpm')
