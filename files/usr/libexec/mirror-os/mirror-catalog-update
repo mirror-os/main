@@ -699,6 +699,28 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 import xml.etree.ElementTree as ET
 
+def _fts_name_extras(name: str) -> str:
+    """Return extra FTS tokens for app names that contain non-alphanumeric chars.
+
+    The unicode61 tokenizer splits on special characters, so '0 A.D.' produces
+    tokens ['0','a','d'] — a query like '0ad' or '0 ad' can never match.
+    Appending the concatenated form ('0ad') and its digit/letter-boundary suffixes
+    ('ad') to the FTS name column creates the missing tokens.
+    Plain names (letters + spaces only) are returned unchanged.
+    """
+    if not any(not c.isalnum() and not c.isspace() for c in name):
+        return ''
+    concat = ''.join(c.lower() for c in name if c.isalnum())
+    if not concat:
+        return ''
+    extras = [concat]
+    for i in range(1, len(concat)):
+        if concat[i - 1].isdigit() != concat[i].isdigit():
+            suffix = concat[i:]
+            if len(suffix) >= 2 and suffix != concat:
+                extras.append(suffix)
+    return ' '.join(extras)
+
 db_path      = sys.argv[1]
 appstream    = sys.argv[2]
 media_dir    = sys.argv[3]
@@ -932,7 +954,9 @@ for comp in root.iter('component'):
         json.dumps(screenshots), content_rating, flatpak_ref,
         json.dumps(releases_out), verified, 0, icon_local_path,
     ))
-    fts_rows.append(('flatpak', app_id, name, summary or desc[:200], developer, ' '.join(cats)))
+    _extras = _fts_name_extras(name)
+    _fts_name = f"{name} {_extras}" if _extras else name
+    fts_rows.append(('flatpak', app_id, _fts_name, summary or desc[:200], developer, ' '.join(cats)))
 
 print(f"  Parsed {n} apps in {time.monotonic()-t1:.1f}s; writing DB...", flush=True)
 
@@ -1232,6 +1256,21 @@ update_nix() {
 import sys, json, sqlite3
 from datetime import datetime, timezone
 
+def _fts_name_extras(name: str) -> str:
+    """Return extra FTS tokens for names with non-alphanumeric chars (see Flatpak phase)."""
+    if not any(not c.isalnum() and not c.isspace() for c in name):
+        return ''
+    concat = ''.join(c.lower() for c in name if c.isalnum())
+    if not concat:
+        return ''
+    extras = [concat]
+    for i in range(1, len(concat)):
+        if concat[i - 1].isdigit() != concat[i].isdigit():
+            suffix = concat[i:]
+            if len(suffix) >= 2 and suffix != concat:
+                extras.append(suffix)
+    return ' '.join(extras)
+
 db_path  = sys.argv[1]
 json_file = sys.argv[2]
 
@@ -1280,7 +1319,9 @@ for attr, (_, val) in best.items():
     programs_name = ''  # populated later by update_hm_options
 
     rows.append((attr, pname, ver, desc, '', homepage, license_, '[]', programs_name))
-    fts_rows.append(('nix', attr, pname, desc[:200], '', ''))
+    _nix_extras = _fts_name_extras(pname)
+    _fts_pname = f"{pname} {_nix_extras}" if _nix_extras else pname
+    fts_rows.append(('nix', attr, _fts_pname, desc[:200], '', ''))
 
 conn = sqlite3.connect(db_path, timeout=30)
 
