@@ -1299,9 +1299,27 @@ for attr, (_, val) in best.items():
     # Skip internal Nix derivations not meant for end users.
     # The -unwrapped suffix marks intermediate build artifacts that are
     # never directly user-installable.
-    if attr.endswith('-unwrapped') or attr.endswith('Unwrapped'):
+    if (attr.endswith('-unwrapped') or attr.endswith('Unwrapped') or
+            attr.endswith('-wrapped')  or attr.endswith('Wrapped') or
+            attr.endswith('-wrapper')):
         continue
     pname = val.get('pname', attr)
+    # Skip source archives that Nix treats as packages (e.g. android-ndk-r20.zip)
+    _ARCHIVE_EXTS = ('.zip', '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz',
+                     '.jar', '.whl', '.deb', '.rpm')
+    if any(pname.endswith(ext) for ext in _ARCHIVE_EXTS):
+        continue
+    # Skip version-prefixed language ecosystem libs (python3.13-foo, perl5.42-foo,
+    # ocaml4.14-foo). These are language-internal packages, not user applications.
+    _LANG_PREFIXES = ('python', 'perl', 'ocaml')
+    if any(pname.startswith(p) and len(pname) > len(p) and pname[len(p)].isdigit()
+           for p in _LANG_PREFIXES):
+        continue
+    # Skip auto-generated test/build derivation names — genuine package names
+    # don't exceed 80 chars; beyond that they're typically generated strings like
+    # "equal-contents-builddotnetmodule-produces-the-same-output-...".
+    if len(pname) > 80:
+        continue
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
     meta  = val.get('meta', {}) if isinstance(val.get('meta'), dict) else {}
