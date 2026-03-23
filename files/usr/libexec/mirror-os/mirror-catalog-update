@@ -1257,6 +1257,11 @@ rows     = []
 fts_rows = []
 
 for attr, (_, val) in best.items():
+    # Skip internal Nix derivations not meant for end users.
+    # The -unwrapped suffix marks intermediate build artifacts that are
+    # never directly user-installable.
+    if attr.endswith('-unwrapped') or attr.endswith('Unwrapped'):
+        continue
     pname = val.get('pname', attr)
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
