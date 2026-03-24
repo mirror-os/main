@@ -1330,9 +1330,9 @@ for attr, (_, val) in best.items():
     # "equal-contents-builddotnetmodule-produces-the-same-output-...".
     if len(pname) > 80:
         continue
-    # Skip npm-scoped package names (@scope/name) — these are JavaScript library
-    # internals that should not appear as installable user applications.
-    if '@' in pname or '/' in pname:
+    # Skip npm-scoped node packages.  Their attr paths use '@scope/name' syntax
+    # (e.g. @antora/cli, @antfu/ni) and pnames sometimes carry the same chars.
+    if '@' in attr or '/' in attr or '@' in pname or '/' in pname:
         continue
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
@@ -1343,6 +1343,13 @@ for attr, (_, val) in best.items():
     _desc_low = desc.lower()
     if (_desc_low.startswith('deprecated') or
             _desc_low.startswith('(deprecated')):
+        continue
+    # Skip auto-generated pkg-config / cmake probing derivations.  These have
+    # pnames like check-pkg-config-gtk+ and descriptions "Test whether …".
+    # Their attrs end up as the module name being probed (e.g. "gdk-2.0" → "0")
+    # which looks completely wrong to users.
+    if (pname.startswith('check-pkg-config-') or
+            pname.startswith('check-cmake-config-')):
         continue
     homepage = meta.get('homepage', val.get('homepage', ''))
     if isinstance(homepage, list):
