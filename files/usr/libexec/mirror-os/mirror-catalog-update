@@ -1330,9 +1330,20 @@ for attr, (_, val) in best.items():
     # "equal-contents-builddotnetmodule-produces-the-same-output-...".
     if len(pname) > 80:
         continue
+    # Skip npm-scoped package names (@scope/name) — these are JavaScript library
+    # internals that should not appear as installable user applications.
+    if '@' in pname or '/' in pname:
+        continue
     ver   = val.get('version', '')
     desc  = val.get('description', '').replace('\n', ' ').strip()
     meta  = val.get('meta', {}) if isinstance(val.get('meta'), dict) else {}
+    # Skip packages whose description announces they are deprecated.
+    # Use a tight prefix match to avoid false positives (e.g. packages that
+    # *replace* a deprecated one and mention it in passing).
+    _desc_low = desc.lower()
+    if (_desc_low.startswith('deprecated') or
+            _desc_low.startswith('(deprecated')):
+        continue
     homepage = meta.get('homepage', val.get('homepage', ''))
     if isinstance(homepage, list):
         homepage = homepage[0] if homepage else ''
