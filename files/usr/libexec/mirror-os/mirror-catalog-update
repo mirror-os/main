@@ -579,6 +579,52 @@ KNOWN_HOSTS = {'github','gitlab','bitbucket','codeberg','sr'}
 KNOWN_ORGS  = {'gnome','kde','xfce','freedesktop','mozilla','apache','microsoft'}
 TRAIL_SFXS  = {'client','desktop','app','stable','beta','nightly','gtk','gtk3','gtk4','bin'}
 
+# Nix pname prefixes that indicate a non-user-facing package (extension, core, dict, etc.).
+# These are skipped when building the match lookup to prevent them from stealing slugs
+# that should belong to real GUI apps (e.g. attr 'opera' → pname 'libretro-opera' must
+# not match the Opera browser Flatpak).
+NON_APP_PNAME_PFXS = (
+    'gnome-shell-extension-', 'kde-plasma-', 'xfce4-panel-plugin-',
+    'typst-package-', 'libretro-', 'kodi-', 'kodi-addon-',
+    'aspell-', 'hunspell-', 'nuspell-',
+    'homeassistant-', 'homeassistant-test-',
+    'vimplugin-', 'emacs-', 'sbcl-', 'ocaml-',
+)
+
+# Manual Flatpak→Nix pairs for apps where slug algorithms cannot find the correct match.
+# Add here when you KNOW the right Nix attr and the algorithm can't find it.
+# Format: flatpak_id → nix_attr
+#
+# HOW TO AUDIT FOR MISSING PAIRS (run periodically or after nixpkgs updates):
+#   nix shell nixpkgs#sqlite --command sqlite3 ~/.local/share/mirror-os/catalog.db \
+#     "SELECT m.flatpak_id, f.name, f.monthly_downloads FROM app_map m
+#      JOIN flatpak_apps f ON f.app_id = m.flatpak_id
+#      WHERE m.nix_attr IS NULL
+#      ORDER BY f.monthly_downloads DESC LIMIT 50;"
+# For each result, check if the app exists in nixpkgs and add the pair below.
+EXPLICIT_PAIRS = {
+    'com.play0ad.zeroad': 'zeroad',        # "0 A.D." – name has no overlap with "zeroad"
+    'com.adamcake.Bolt':  'bolt-launcher', # RuneScape launcher; algo picks 'bolt' (Thunderbolt daemon) by mistake
+}
+
+# Known-wrong matches that the algorithm produces. Add here when the algorithm links two
+# completely different apps that happen to share a name, and you have no replacement pair.
+#
+# HOW TO AUDIT FOR BAD MATCHES (run periodically, spot-check ~30 random matches):
+#   nix shell nixpkgs#sqlite --command sqlite3 ~/.local/share/mirror-os/catalog.db \
+#     "SELECT m.flatpak_id, m.nix_attr, f.name AS fp_name, n.pname AS nix_pname,
+#             f.summary, n.description
+#      FROM app_map m
+#      JOIN flatpak_apps f ON f.app_id = m.flatpak_id
+#      JOIN nix_packages n ON n.attr   = m.nix_attr
+#      WHERE m.flatpak_id IS NOT NULL AND m.nix_attr IS NOT NULL
+#      ORDER BY RANDOM() LIMIT 30;"
+# Review the output and add obvious mismatches below.
+EXPLICIT_EXCLUDES = {
+    # Format: (flatpak_id, nix_attr)
+    # (currently empty – com.adamcake.Bolt is corrected via EXPLICIT_PAIRS above)
+}
+
 def flatpak_slug(app_id):
     parts = app_id.lower().split('.')
     if parts and parts[0] in KNOWN_TLDS:              parts = parts[1:]
@@ -606,32 +652,152 @@ def nix_slug(attr):
             s = s[:-len(sfx)]
     return s
 
+def normalize_name(s):
+    s = re.sub(r'[^a-z0-9]', '-', (s or '').lower()).strip('-')
+    return re.sub(r'-+', '-', s)
+
+# Generic functionality words too broad to confirm app identity on their own.
+# Two apps sharing only these words may still be completely different programs.
+_GENERIC = {
+    'calculator','calendar','editor','viewer','player','browser','manager',
+    'monitor','clock','timer','recorder','scanner','reader','downloader',
+    'installer','messenger','client','server','desktop','system','settings',
+    'preferences','tools','utilities','files','music','video','audio','image',
+    'photo','pdf','text','notes','tasks','email','mail','weather','news',
+    'maps','camera','screen','keyboard','mouse','network','password','security',
+    'backup','sync','cloud','store','shop',
+}
+_STOP = {'a','an','the','for','to','of','in','and','or','is','it','by','with'}
+
+def names_compatible(a, b):
+    """True if the two display names share at least one non-generic significant word."""
+    wa = {w for w in re.sub(r'[^a-z0-9]', ' ', (a or '').lower()).split()
+          if len(w) > 2 and w not in _STOP}
+    wb = {w for w in re.sub(r'[^a-z0-9]', ' ', (b or '').lower()).split()
+          if len(w) > 2 and w not in _STOP}
+    if not wa or not wb:
+        return False
+    return bool((wa & wb) - _GENERIC)
+
 # ── Load both catalogs ───────────────────────────────────────────────────────
 conn = sqlite3.connect(db_path, timeout=30)
 
 flatpak_rows = conn.execute("SELECT app_id, name FROM flatpak_apps").fetchall()
 nix_rows     = conn.execute("SELECT attr, pname FROM nix_packages").fetchall()
 
-# Build slug → (id, name) dicts
+fp_names_d = dict(flatpak_rows)
+
+# Build Nix slug lookup, skipping non-user-app packages by pname prefix
+nix_slugs = {}
+for attr, pname in nix_rows:
+    s = nix_slug(attr)
+    if not s:
+        continue
+    if any((pname or '').lower().startswith(p) for p in NON_APP_PNAME_PFXS):
+        continue
+    if s not in nix_slugs:
+        nix_slugs[s] = (attr, pname or '')
+
+# Build primary Flatpak slug lookup
 fp_slugs = {}
 for app_id, name in flatpak_rows:
     s = flatpak_slug(app_id)
     if s and s not in fp_slugs:
         fp_slugs[s] = (app_id, name)
 
-nix_slugs = {}
+# ── Multi-strategy Flatpak→Nix matching ─────────────────────────────────────
+# fp_matched: flatpak_id → (nix_attr, canonical_slug)
+fp_matched = {}
+nix_claimed = set()
+
+# Phase 0: explicit pairs (highest priority, bypass all slug logic)
+for fp_id, nix_attr in EXPLICIT_PAIRS.items():
+    for s, (a, _) in nix_slugs.items():
+        if a == nix_attr:
+            fp_matched[fp_id] = (nix_attr, s)
+            nix_claimed.add(nix_attr)
+            break
+
+# Phase 1: primary slug match (existing behaviour)
+for fp_slug, (fp_id, _) in fp_slugs.items():
+    if fp_id in fp_matched:
+        continue
+    if fp_slug in nix_slugs:
+        nix_attr, _ = nix_slugs[fp_slug]
+        if nix_attr not in nix_claimed:
+            fp_matched[fp_id] = (nix_attr, fp_slug)
+            nix_claimed.add(nix_attr)
+
+# Phase 2: last-component strategy
+# Many Flatpak IDs use personal/regional domains (ar.xjuan.*, app.drey.*, etc.) that
+# produce compound slugs. The actual app name is almost always the last component.
+for app_id, fp_name in flatpak_rows:
+    if app_id in fp_matched:
+        continue
+    parts = app_id.lower().split('.')
+    if parts and parts[0] in KNOWN_TLDS:    parts = parts[1:]
+    if parts and parts[0] in KNOWN_HOSTS:   parts = parts[1:]
+    if not parts:
+        continue
+    last_slug = re.sub(r'[^a-z0-9-]', '-', parts[-1]).strip('-')
+    last_slug  = re.sub(r'-+', '-', last_slug)
+    if (last_slug and last_slug != flatpak_slug(app_id)
+            and last_slug in nix_slugs):
+        nix_attr, nix_pname = nix_slugs[last_slug]
+        if (nix_attr not in nix_claimed
+                and names_compatible(fp_name, nix_pname)
+                and (app_id, nix_attr) not in EXPLICIT_EXCLUDES):
+            fp_matched[app_id] = (nix_attr, last_slug)
+            nix_claimed.add(nix_attr)
+
+# Phase 3: app-name normalization strategy
+# Normalize the Flatpak display name and try it as a slug. Handles cases like
+# io.neovim.nvim (name "Neovim") where the last component "nvim" doesn't match
+# the Nix attr "neovim", but the display name slug "neovim" does.
+for app_id, fp_name in flatpak_rows:
+    if app_id in fp_matched:
+        continue
+    ns = normalize_name(fp_name)
+    if ns and ns in nix_slugs:
+        nix_attr, nix_pname = nix_slugs[ns]
+        if (nix_attr not in nix_claimed
+                and names_compatible(fp_name, nix_pname)
+                and (app_id, nix_attr) not in EXPLICIT_EXCLUDES):
+            fp_matched[app_id] = (nix_attr, ns)
+            nix_claimed.add(nix_attr)
+
+# ── Build unified app_map rows ───────────────────────────────────────────────
+# Matched pairs use the canonical (Nix-side) slug.
+# Unmatched Flatpak apps use their primary fp_slug.
+# Unmatched Nix packages (including pname-filtered ones) use their nix slug.
+slug_to_row = {}  # slug → (fp_id, nix_attr, display_name)
+
+for fp_id, (nix_attr, slug) in fp_matched.items():
+    slug_to_row[slug] = (fp_id, nix_attr, fp_names_d.get(fp_id, slug))
+
+for fp_slug, (fp_id, fp_name) in fp_slugs.items():
+    if fp_id not in fp_matched and fp_slug not in slug_to_row:
+        slug_to_row[fp_slug] = (fp_id, None, fp_name)
+
+for nix_slug_s, (nix_attr, nix_pname) in nix_slugs.items():
+    if nix_attr not in nix_claimed and nix_slug_s not in slug_to_row:
+        slug_to_row[nix_slug_s] = (None, nix_attr, nix_pname)
+
+# Re-include Nix packages that were filtered from nix_slugs (non-user-app pnames).
+# They still deserve app_map entries so Nix-source users can find them; they just
+# must not compete for Flatpak match slots.
+all_nix_slugs_raw = {}
 for attr, pname in nix_rows:
     s = nix_slug(attr)
-    if s and s not in nix_slugs:
-        nix_slugs[s] = (attr, pname)
+    if s and s not in all_nix_slugs_raw:
+        all_nix_slugs_raw[s] = (attr, pname or '')
+for s, (attr, pname) in all_nix_slugs_raw.items():
+    if attr not in nix_claimed and s not in slug_to_row:
+        slug_to_row[s] = (None, attr, pname)
 
-# ── Build unified rows ───────────────────────────────────────────────────────
-all_slugs = set(fp_slugs) | set(nix_slugs)
 map_rows = []
-for slug in sorted(all_slugs):
-    fp_id, fp_name = fp_slugs.get(slug, (None, None))
-    nix_attr, nix_name = nix_slugs.get(slug, (None, None))
-    display_name = fp_name or nix_name or slug
+for slug in sorted(slug_to_row):
+    fp_id, nix_attr, display_name = slug_to_row[slug]
     preferred = 'flatpak' if fp_id else 'nix'
     map_rows.append((slug, fp_id, nix_attr, display_name, preferred))
 
