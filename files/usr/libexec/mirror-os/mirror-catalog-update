@@ -394,6 +394,11 @@ try:
     conn.commit()
 except Exception:
     pass  # column already exists
+try:
+    conn.execute("ALTER TABLE nix_packages ADD COLUMN categories TEXT NOT NULL DEFAULT '[]'")
+    conn.commit()
+except Exception:
+    pass  # column already exists
 
 # ── Step 1: get all programs.* names from HM ─────────────────────────────────
 flake_ref = f"{hm_dir}#homeConfigurations.{username}.options.programs"
@@ -1161,7 +1166,7 @@ CREATE TABLE IF NOT EXISTS nix_packages (
     version TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
     long_description TEXT NOT NULL DEFAULT '', homepage TEXT NOT NULL DEFAULT '',
     license TEXT NOT NULL DEFAULT '', maintainers TEXT NOT NULL DEFAULT '[]',
-    programs_name TEXT NOT NULL DEFAULT ''
+    programs_name TEXT NOT NULL DEFAULT '', categories TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS catalog_meta (
     source TEXT PRIMARY KEY, updated_at TEXT NOT NULL, row_count INTEGER NOT NULL DEFAULT 0
@@ -1461,6 +1466,39 @@ for key, val in data.items():
 rows     = []
 fts_rows = []
 
+# Mapping from Nix meta.keywords values to AppStream categories.
+# AppStream category strings must match those used in the software center's
+# nav.rs Category enum (Game, AudioVideo, Network, Development, Science,
+# Office, Graphics, Education, Utility, System, Settings).
+_KEYWORD_TO_CATEGORY = {
+    'browser': 'Network', 'internet': 'Network', 'email': 'Network',
+    'mail': 'Network', 'network': 'Network', 'web': 'Network', 'chat': 'Network',
+    'irc': 'Network', 'messaging': 'Network', 'xmpp': 'Network', 'voip': 'Network',
+    'game': 'Game', 'games': 'Game', 'gaming': 'Game', 'emulator': 'Game',
+    'emulation': 'Game', 'arcade': 'Game', 'strategy': 'Game', 'puzzle': 'Game',
+    'audio': 'AudioVideo', 'music': 'AudioVideo', 'video': 'AudioVideo',
+    'multimedia': 'AudioVideo', 'media': 'AudioVideo', 'player': 'AudioVideo',
+    'podcast': 'AudioVideo', 'streaming': 'AudioVideo', 'daw': 'AudioVideo',
+    'development': 'Development', 'programming': 'Development', 'ide': 'Development',
+    'debugger': 'Development', 'vcs': 'Development', 'git': 'Development',
+    'compiler': 'Development', 'linter': 'Development', 'editor': 'Development',
+    'science': 'Science', 'scientific': 'Science', 'math': 'Science',
+    'mathematics': 'Science', 'physics': 'Science', 'biology': 'Science',
+    'chemistry': 'Science', 'statistics': 'Science',
+    'office': 'Office', 'productivity': 'Office', 'spreadsheet': 'Office',
+    'word-processor': 'Office', 'presentation': 'Office', 'pdf': 'Office',
+    'graphics': 'Graphics', 'image': 'Graphics', 'photo': 'Graphics',
+    'drawing': 'Graphics', '3d': 'Graphics', 'cad': 'Graphics',
+    'illustration': 'Graphics', 'svg': 'Graphics', 'raster': 'Graphics',
+    'education': 'Education', 'learning': 'Education', 'language': 'Education',
+    'dictionary': 'Education', 'flashcard': 'Education',
+    'utility': 'Utility', 'utilities': 'Utility', 'file-manager': 'Utility',
+    'archiver': 'Utility', 'calculator': 'Utility', 'clock': 'Utility',
+    'system': 'System', 'system-administration': 'System', 'monitoring': 'System',
+    'terminal': 'System', 'shell': 'System', 'package-manager': 'System',
+    'settings': 'Settings', 'configuration': 'Settings', 'accessibility': 'Settings',
+}
+
 for attr, (_, val) in best.items():
     # Skip internal Nix derivations not meant for end users.
     # The -unwrapped suffix marks intermediate build artifacts that are
@@ -1530,7 +1568,13 @@ for attr, (_, val) in best.items():
         license_ = str(lic_raw) if lic_raw else ''
     programs_name = ''  # populated later by update_hm_options
 
-    rows.append((attr, pname, ver, desc, '', homepage, license_, '[]', programs_name))
+    # Map meta.keywords → AppStream categories (deduplicated, sorted for stability).
+    raw_kws = meta.get('keywords', [])
+    nix_cats = sorted({_KEYWORD_TO_CATEGORY[kw.lower()]
+                       for kw in (raw_kws if isinstance(raw_kws, list) else [])
+                       if kw.lower() in _KEYWORD_TO_CATEGORY})
+
+    rows.append((attr, pname, ver, desc, '', homepage, license_, '[]', programs_name, json.dumps(nix_cats)))
     _nix_extras = _fts_name_extras(pname)
     _fts_pname = f"{pname} {_nix_extras}" if _nix_extras else pname
     fts_rows.append(('nix', attr, _fts_pname, desc[:200], '', ''))
@@ -1597,8 +1641,8 @@ with conn:
     conn.execute("DELETE FROM nix_packages")
     conn.executemany(
         "INSERT OR REPLACE INTO nix_packages"
-        "(attr,pname,version,description,long_description,homepage,license,maintainers,programs_name)"
-        " VALUES (?,?,?,?,?,?,?,?,?)",
+        "(attr,pname,version,description,long_description,homepage,license,maintainers,programs_name,categories)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.execute("DELETE FROM catalog_fts WHERE source='nix'")
