@@ -1629,6 +1629,7 @@ for col_def in [
     "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE app_map ADD COLUMN preferred_source TEXT NOT NULL DEFAULT 'flatpak'",
+    "ALTER TABLE nix_packages ADD COLUMN categories TEXT NOT NULL DEFAULT '[]'",
 ]:
     try:
         conn.execute(col_def)
