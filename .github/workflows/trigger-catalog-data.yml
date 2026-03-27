@@ -5,10 +5,8 @@ name: Trigger catalog-data rebuild
 # catalog-data repo's scheduled run.
 #
 # Prerequisites:
-#   1. Add a secret CATALOG_DATA_PAT to this repo: a Fine-Grained PAT (or classic
-#      PAT with `repo` scope) that has Contents: read/write on mirror-os/catalog-data.
-#   2. Ensure the catalog-data CI workflow has `repository_dispatch` in its `on:`
-#      block and handles event_type: mirror-catalog-update-changed.
+#   Add a secret CATALOG_DATA_PAT to this repo: a Fine-Grained PAT with
+#   Actions: read/write permission on mirror-os/catalog-data.
 
 on:
   push:
@@ -24,10 +22,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Dispatch catalog-data rebuild
+      - name: Trigger catalog-data rebuild
         env:
           GH_TOKEN: ${{ secrets.CATALOG_DATA_PAT }}
         run: |
-          gh api repos/mirror-os/catalog-data/dispatches \
-            -f event_type=mirror-catalog-update-changed
-          echo "Dispatched repository_dispatch to mirror-os/catalog-data (event: mirror-catalog-update-changed)."
+          gh workflow run update.yml --repo mirror-os/catalog-data
+          echo "Triggered update.yml in mirror-os/catalog-data."
