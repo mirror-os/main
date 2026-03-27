@@ -1,0 +1,33 @@
+name: Trigger catalog-data rebuild
+
+# Fires when catalog-related scripts change so the pre-built catalog stays in
+# sync with the latest mirror-catalog-update code without waiting for the
+# catalog-data repo's scheduled run.
+#
+# Prerequisites:
+#   1. Add a secret CATALOG_DATA_PAT to this repo: a Fine-Grained PAT (or classic
+#      PAT with `repo` scope) that has Contents: read/write on mirror-os/catalog-data.
+#   2. Ensure the catalog-data CI workflow has `repository_dispatch` in its `on:`
+#      block and handles event_type: mirror-catalog-update-changed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'files/usr/libexec/mirror-os/mirror-catalog-update'
+      - 'files/scripts/build-catalog.sh'
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Dispatch catalog-data rebuild
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_DATA_PAT }}
+        run: |
+          gh api repos/mirror-os/catalog-data/dispatches \
+            -f event_type=mirror-catalog-update-changed
+          echo "Dispatched repository_dispatch to mirror-os/catalog-data (event: mirror-catalog-update-changed)."

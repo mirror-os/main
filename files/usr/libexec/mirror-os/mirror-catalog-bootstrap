@@ -70,6 +70,7 @@ conn = sqlite3.connect(db_path, timeout=30)
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN provides TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE flatpak_apps ADD COLUMN remote TEXT NOT NULL DEFAULT 'flathub'",
+    "ALTER TABLE nix_packages ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
 ]:
     try:
         conn.execute(col_def)
