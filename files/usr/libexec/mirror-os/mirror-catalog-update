@@ -859,6 +859,18 @@ if [ "$BUILD_MODE" -eq 1 ]; then
 update_flatpak() {
     log "Updating Flatpak catalog from AppStream XML (Phase 1: parse + index)..."
 
+    # Ensure the COSMIC Flatpak remote is registered.
+    # In the catalog-data CI the container starts with only Flathub; in the
+    # image build the remote is already present from the default-flatpaks module.
+    log "Ensuring COSMIC Flatpak remote is registered..."
+    flatpak remote-add --system --if-not-exists cosmic \
+        https://apt.pop-os.org/cosmic/cosmic.flatpakrepo >> "$LOG_FILE" 2>&1 || true
+
+    # Refresh AppStream metadata for all remotes (Flathub, COSMIC, …).
+    log "Refreshing AppStream metadata for all remotes..."
+    flatpak update --appstream --system --noninteractive >> "$LOG_FILE" 2>&1 || \
+        log "WARNING: flatpak update --appstream had errors — continuing with existing data."
+
     local found=0
     for appstream_base in /var/lib/flatpak/appstream/*/x86_64/active; do
         [ -d "$appstream_base" ] || continue
