@@ -992,7 +992,7 @@ n = 0
 t1 = time.monotonic()
 for comp in root.iter('component'):
     ctype = comp.get('type', '')
-    if ctype not in ('desktop-application', 'console-application', 'desktop'):
+    if ctype not in ('desktop-application', 'console-application', 'desktop', 'addon'):
         continue
 
     app_id = elem_text(comp, 'id')
