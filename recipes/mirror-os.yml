@@ -127,7 +127,7 @@ modules:
       - source: fonts/99-mirror-os-defaults.conf
         destination: /etc/fonts/conf.d/99-mirror-os-defaults.conf
 
-  # Register the Flathub remote at system scope.
+  # Register Flathub and COSMIC Flatpak remotes at system scope.
   # Default apps are NOT installed here — mirror-os-flatpak-init.service installs
   # them at system scope before the display manager on first boot only.
   # User-added apps are managed via nix-flatpak in home-user.nix.
@@ -138,6 +138,11 @@ modules:
         repo:
           url: https://dl.flathub.org/repo/flathub.flatpakrepo
           name: flathub
+      - scope: system
+        notify: false
+        repo:
+          url: https://apt.pop-os.org/cosmic/cosmic.flatpakrepo
+          name: cosmic
 
   # Install Mirror OS Software Center binary, desktop file, and icons
   # from the public ghcr.io/mirror-os/mirror-software-center image.

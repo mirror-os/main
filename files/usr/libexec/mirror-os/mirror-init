@@ -191,6 +191,12 @@ if flatpak remote-add --user --if-not-exists flathub \
 else
     log "WARNING: Could not add user-scope flathub remote — user Flatpak installs may fail"
 fi
+if flatpak remote-add --user --if-not-exists cosmic \
+        https://apt.pop-os.org/cosmic/cosmic.flatpakrepo >> "$LOG" 2>&1; then
+    log "User-scope cosmic remote configured"
+else
+    log "WARNING: Could not add user-scope cosmic remote — COSMIC apps may not show in Software Center"
+fi
 
 # ── Step 11b: Bootstrap catalog database ────────────────────────────────────
 # Downloads a pre-built catalog.db and media archives from the catalog-data
