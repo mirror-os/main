@@ -65,6 +65,16 @@ if [ -d "$SYSTEM_ICONS" ] && [ "$(ls -A "$SYSTEM_ICONS" 2>/dev/null)" ]; then
 import sqlite3, os, sys
 db_path, icons_dir = sys.argv[1], sys.argv[2]
 conn = sqlite3.connect(db_path, timeout=30)
+# Migration guard — add columns introduced after this catalog was built.
+# ALTER TABLE fails silently if the column already exists.
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN provides TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE flatpak_apps ADD COLUMN remote TEXT NOT NULL DEFAULT 'flathub'",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass
 # Clear any stale build-time icon paths from the image's catalog.db
 with conn:
     conn.execute("UPDATE flatpak_apps SET icon_local_path = ''")

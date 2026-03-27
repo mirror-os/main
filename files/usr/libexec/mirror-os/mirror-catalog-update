@@ -188,6 +188,16 @@ if icons_url:
 
 # ── Re-derive icon_local_path in the DB ──────────────────────────────────
 conn = sqlite3.connect(db_path, timeout=30)
+# Migration guard — add columns introduced after the pre-built catalog was built.
+# ALTER TABLE fails silently if the column already exists.
+for col_def in [
+    "ALTER TABLE flatpak_apps ADD COLUMN provides TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE flatpak_apps ADD COLUMN remote TEXT NOT NULL DEFAULT 'flathub'",
+]:
+    try:
+        conn.execute(col_def)
+    except Exception:
+        pass
 # Clear any stale build-time paths — the downloaded catalog.db may contain
 # CI paths (e.g. /tmp/catalog-work/...) that don't exist on this machine.
 with conn:
