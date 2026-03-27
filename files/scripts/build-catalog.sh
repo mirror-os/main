@@ -53,7 +53,7 @@ BUILD_HOME=/tmp/catalog-build
 mkdir -p "$BUILD_HOME/.local/share/mirror-os"
 
 HOME="$BUILD_HOME" /usr/libexec/mirror-os/mirror-catalog-update \
-    --source flatpak --no-media
+    --build --source flatpak --no-media
 
 # ── Sanitise icon paths before baking into image ────────────────────────────
 # icon_local_path values point to $BUILD_HOME (a build-time temp path).

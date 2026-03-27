@@ -27,9 +27,7 @@ MEDIA_DIR="$HOME/.local/share/mirror-os/media"
 # GitHub release URL for pre-built catalog (public, no auth needed)
 CATALOG_RELEASE_API="https://api.github.com/repos/mirror-os/catalog-data/releases/tags/catalog-latest"
 
-# Build-mode only
-APPSTREAM_GZ="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml.gz"
-APPSTREAM_XML="/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml"
+# Build-mode only — AppStream paths are computed dynamically per remote in update_flatpak()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -851,20 +849,25 @@ if [ "$BUILD_MODE" -eq 1 ]; then
 update_flatpak() {
     log "Updating Flatpak catalog from AppStream XML (Phase 1: parse + index)..."
 
-    local appstream_path=""
-    if [ -f "$APPSTREAM_GZ" ]; then
-        appstream_path="$APPSTREAM_GZ"
-    elif [ -f "$APPSTREAM_XML" ]; then
-        appstream_path="$APPSTREAM_XML"
-    else
-        log "AppStream XML not found at $APPSTREAM_GZ or $APPSTREAM_XML — skipping Flatpak update."
-        log "Tip: run 'flatpak update' to refresh the Flathub metadata cache."
-        return 1
-    fi
-
-    # Phase 1: parse XML, copy only already-present local icons, write DB.
-    # No network calls — completes in seconds.
-    python3 - "$CATALOG_DB" "$appstream_path" "$MEDIA_DIR" << 'PYEOF'
+    local found=0
+    for appstream_base in /var/lib/flatpak/appstream/*/x86_64/active; do
+        [ -d "$appstream_base" ] || continue
+        local remote
+        remote=$(basename "$(dirname "$(dirname "$appstream_base")")")
+        local appstream_path=""
+        if [ -f "${appstream_base}/appstream.xml.gz" ]; then
+            appstream_path="${appstream_base}/appstream.xml.gz"
+        elif [ -f "${appstream_base}/appstream.xml" ]; then
+            appstream_path="${appstream_base}/appstream.xml"
+        else
+            log "AppStream XML not found for remote '${remote}' — skipping."
+            continue
+        fi
+        found=$((found + 1))
+        log "Processing remote '${remote}' AppStream..."
+        # Phase 1: parse XML, copy only already-present local icons, write DB.
+        # No network calls — completes in seconds.
+        python3 - "$CATALOG_DB" "$appstream_path" "$MEDIA_DIR" "$remote" << 'PYEOF'
 import sys, os, gzip, json, sqlite3, re, shutil, time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -895,9 +898,10 @@ def _fts_name_extras(name: str) -> str:
 db_path      = sys.argv[1]
 appstream    = sys.argv[2]
 media_dir    = sys.argv[3]
+remote_name  = sys.argv[4] if len(sys.argv) > 4 else 'flathub'
 icons_dir    = os.path.join(media_dir, 'icons')
 ss_base_dir  = os.path.join(media_dir, 'screenshots')
-FLATPAK_ICON_DIR = "/var/lib/flatpak/appstream/flathub/x86_64/active/icons"
+FLATPAK_ICON_DIR = f"/var/lib/flatpak/appstream/{remote_name}/x86_64/active/icons"
 
 # ── HTML tag stripper ──────────────────────────────────────────────────────
 class TagStripper(HTMLParser):
@@ -1087,6 +1091,9 @@ for comp in root.iter('component'):
 
     content_rating = oars_rating(comp)
 
+    # Provides: IDs this component provides (e.g. com.system76.CosmicApplication, com.system76.CosmicApplet)
+    provides = [e.text.strip() for e in comp.findall('provides/id') if e.text]
+
     flatpak_ref = ''
     bundle = comp.find("bundle[@type='flatpak']")
     if bundle is not None:
@@ -1124,10 +1131,11 @@ for comp in root.iter('component'):
         json.dumps(cats), json.dumps(kws), icon_name,
         json.dumps(screenshots), content_rating, flatpak_ref,
         json.dumps(releases_out), verified, 0, icon_local_path,
+        json.dumps(provides), remote_name,
     ))
     _extras = _fts_name_extras(name)
     _fts_name = f"{name} {_extras}" if _extras else name
-    fts_rows.append(('flatpak', app_id, _fts_name, summary or desc[:200], developer, ' '.join(cats)))
+    fts_rows.append((remote_name, app_id, _fts_name, summary or desc[:200], developer, ' '.join(cats)))
 
 print(f"  Parsed {n} apps in {time.monotonic()-t1:.1f}s; writing DB...", flush=True)
 
@@ -1159,7 +1167,9 @@ CREATE TABLE IF NOT EXISTS flatpak_apps (
     releases_json     TEXT NOT NULL DEFAULT '[]',
     verified          INTEGER NOT NULL DEFAULT 0,
     monthly_downloads INTEGER NOT NULL DEFAULT 0,
-    icon_local_path   TEXT NOT NULL DEFAULT ''
+    icon_local_path   TEXT NOT NULL DEFAULT '',
+    provides          TEXT NOT NULL DEFAULT '[]',
+    remote            TEXT NOT NULL DEFAULT 'flathub'
 );
 CREATE TABLE IF NOT EXISTS nix_packages (
     attr TEXT PRIMARY KEY, pname TEXT NOT NULL,
@@ -1185,6 +1195,8 @@ CREATE INDEX IF NOT EXISTS idx_app_map_nix     ON app_map(nix_attr);
 
 for col_def in [
     "ALTER TABLE flatpak_apps ADD COLUMN icon_local_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE flatpak_apps ADD COLUMN provides TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE flatpak_apps ADD COLUMN remote TEXT NOT NULL DEFAULT 'flathub'",
     "ALTER TABLE nix_packages ADD COLUMN long_description TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE nix_packages ADD COLUMN maintainers TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE nix_packages ADD COLUMN programs_name TEXT NOT NULL DEFAULT ''",
@@ -1196,16 +1208,17 @@ for col_def in [
 
 now = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 with conn:
-    conn.execute("DELETE FROM flatpak_apps")
-    conn.executemany("INSERT OR REPLACE INTO flatpak_apps VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    conn.execute("DELETE FROM catalog_fts WHERE source='flatpak'")
+    conn.execute("DELETE FROM flatpak_apps WHERE remote=?", (remote_name,))
+    conn.executemany("INSERT OR REPLACE INTO flatpak_apps VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    # Also clear old entries that used source='flatpak' (one-time migration for existing catalogs)
+    conn.execute("DELETE FROM catalog_fts WHERE source IN ('flatpak', ?)", (remote_name,))
     conn.executemany("INSERT INTO catalog_fts(source,id,name,description,developer,categories) VALUES (?,?,?,?,?,?)", fts_rows)
-    conn.execute("INSERT OR REPLACE INTO catalog_meta(source,updated_at,row_count) VALUES ('flatpak',?,?)", (now, len(rows)))
+    conn.execute("INSERT OR REPLACE INTO catalog_meta(source,updated_at,row_count) VALUES (?,?,?)", (remote_name, now, len(rows)))
 conn.close()
 
 icons_needed  = len(remote_icons)
 ss_needed     = len(remote_screenshots)
-print(f"Flatpak catalog updated: {len(rows)} apps indexed. "
+print(f"Flatpak catalog updated ({remote_name}): {len(rows)} apps indexed. "
       f"Icons missing: {icons_needed}. Apps needing screenshot downloads: {ss_needed}.", flush=True)
 
 # Write pending download lists for Phase 2
@@ -1214,12 +1227,19 @@ pending_file = os.path.join(media_dir, '.pending_downloads.json')
 with open(pending_file, 'w') as f:
     _json.dump({'icons': remote_icons, 'screenshots': remote_screenshots}, f)
 PYEOF
-    local rc=$?
-    if [ $rc -ne 0 ]; then
-        log "Flatpak catalog update (Phase 1) failed (exit $rc)."
-        return $rc
+        local rc=$?
+        if [ $rc -ne 0 ]; then
+            log "Flatpak catalog update for '${remote}' (Phase 1) failed (exit $rc)."
+        else
+            log "Remote '${remote}' catalog updated (Phase 1 complete)."
+        fi
+    done
+
+    if [ "$found" -eq 0 ]; then
+        log "No AppStream found in /var/lib/flatpak/appstream/ — skipping Flatpak update."
+        log "Tip: run 'flatpak update' to refresh the metadata cache."
+        return 1
     fi
-    log "Flatpak catalog updated successfully (Phase 1 complete)."
 }
 
 # Phase 2: download missing icons and screenshots (network, can be slow on first run)
