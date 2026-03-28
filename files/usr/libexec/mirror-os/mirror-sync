@@ -44,6 +44,30 @@ fi
 if [ -f /usr/share/mirror-os/catalog.db ]; then
     /usr/libexec/mirror-os/mirror-catalog-bootstrap >> "$LOG" 2>&1 \
         || log "WARNING: catalog refresh failed (non-fatal)"
+    # Safety net: if the catalog is still sparse after bootstrap (e.g. bootstrap's
+    # own background update hasn't finished on a very quick second run), trigger it.
+    _CATALOG_DB="$HOME/.local/share/mirror-os/catalog.db"
+    if [ -f "$_CATALOG_DB" ]; then
+        _ROW_COUNT=$(python3 -c "
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1], timeout=10)
+    n = 0
+    for tbl in ('flatpak_apps', 'nix_packages'):
+        try:
+            n += conn.execute(f'SELECT COUNT(*) FROM {tbl}').fetchone()[0]
+        except Exception:
+            pass
+    conn.close()
+    print(n)
+except Exception:
+    print(0)
+" "$_CATALOG_DB" 2>/dev/null || echo 0)
+        if [ "${_ROW_COUNT:-0}" -lt 100 ]; then
+            log "Catalog sparse ($_ROW_COUNT rows) after bootstrap — triggering mirror-catalog-update."
+            /usr/libexec/mirror-os/mirror-catalog-update >> "$LOG" 2>&1 &
+        fi
+    fi
 fi
 
 log "=== Mirror OS Sync starting ==="

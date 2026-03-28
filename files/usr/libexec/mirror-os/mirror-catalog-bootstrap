@@ -41,10 +41,42 @@ if [ -f "$CATALOG_DB" ]; then
 fi
 
 log "=== Mirror OS catalog bootstrap starting ==="
+CATALOG_UPDATE="/usr/libexec/mirror-os/mirror-catalog-update"
 mkdir -p "$(dirname "$CATALOG_DB")" "$MEDIA_DIR/icons" "$MEDIA_DIR/screenshots"
 
+# ── Sparse-catalog guard ──────────────────────────────────────────────────────
+# Don't replace a populated user catalog with a sparse image catalog.
+# Count Flatpak + Nix entries; anything under 100 is almost certainly a
+# minimal/placeholder catalog baked at image-build time.
+SYSTEM_ROW_COUNT=$(python3 -c "
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1], timeout=10)
+    n = 0
+    for tbl in ('flatpak_apps', 'nix_packages'):
+        try:
+            n += conn.execute(f'SELECT COUNT(*) FROM {tbl}').fetchone()[0]
+        except Exception:
+            pass
+    conn.close()
+    print(n)
+except Exception:
+    print(0)
+" "$SYSTEM_CATALOG" 2>/dev/null || echo 0)
+
+if [ "${SYSTEM_ROW_COUNT:-0}" -lt 100 ]; then
+    log "WARNING: system catalog is sparse (${SYSTEM_ROW_COUNT} rows) — skipping copy, triggering full update."
+    # Record hash so we don't re-evaluate on every boot for this image.
+    echo "$SYSTEM_CATALOG_HASH" > "$CATALOG_HASH_FILE"
+    if [ -x "$CATALOG_UPDATE" ]; then
+        log "Triggering mirror-catalog-update in background..."
+        "$CATALOG_UPDATE" &
+    fi
+    exit 0
+fi
+
 # ── Copy catalog.db ───────────────────────────────────────────────────────────
-log "Seeding catalog.db from image..."
+log "Seeding catalog.db from image (${SYSTEM_ROW_COUNT} rows)..."
 if ! cp "$SYSTEM_CATALOG" "$CATALOG_DB"; then
     log "WARNING: failed to copy catalog.db"
     exit 0
@@ -124,7 +156,6 @@ echo "$SYSTEM_CATALOG_HASH" > "$CATALOG_HASH_FILE"
 # This queries the user's personal flake, so it can't be pre-computed in CI.
 # Run in the background so bootstrap returns quickly; the catalog is already
 # usable for browsing/installing without HM options.
-CATALOG_UPDATE="/usr/libexec/mirror-os/mirror-catalog-update"
 if [ -x "$CATALOG_UPDATE" ] && [ -f "$HOME/.config/home-manager/flake.nix" ]; then
     log "Triggering HM options bake in background..."
     "$CATALOG_UPDATE" --source hm-options &
