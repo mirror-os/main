@@ -103,7 +103,7 @@ cmd_install() {
     mkdir -p "$APPS_DIR"
 
     local force_flatpak=false force_nix=false use_flake=false pick=false yes=false
-    local query="" flake_url="" flake_name="" override_name=""
+    local query="" flake_url="" flake_name="" override_name="" remote=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -112,6 +112,7 @@ cmd_install() {
             --flake)       use_flake=true; flake_url="$2"; flake_name="$3"; shift 3 ;;
             --pick|--interactive) pick=true; shift ;;
             --name)        override_name="$2"; shift 2 ;;
+            --remote)      remote="$2"; shift 2 ;;
             --yes|-y)      yes=true; shift ;;
             *)
                 if [ -n "$query" ]; then
@@ -167,6 +168,34 @@ except Exception:
 PYEOF
     }
 
+    # Look up the Flatpak remote name for a given app ID from catalog.db.
+    # Falls back to "flathub" if the column is absent or the app isn't found.
+    _lookup_flatpak_remote() {
+        local app_id="$1" fallback="${2:-flathub}"
+        [ -f "$CATALOG_DB" ] || { echo "$fallback"; return; }
+        python3 - "$CATALOG_DB" "$app_id" "$fallback" << 'PYEOF'
+import sys, sqlite3
+db, app_id, fallback = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    conn = sqlite3.connect(db, timeout=5)
+    conn.execute("PRAGMA query_only = ON")
+    row = conn.execute("SELECT COALESCE(remote,'') FROM flatpak_apps WHERE app_id = ? LIMIT 1;", (app_id,)).fetchone()
+    conn.close()
+    print(row[0] if row and row[0] else fallback)
+except Exception:
+    print(fallback)
+PYEOF
+    }
+
+    # Return a human-readable label for a Flatpak remote name.
+    _remote_display_name() {
+        case "$1" in
+            flathub) echo "Flathub" ;;
+            cosmic)  echo "COSMIC Flatpak" ;;
+            *)       echo "$1" ;;
+        esac
+    }
+
     # Force-flatpak: exact ID lookup first, then FTS search
     if $force_flatpak; then
         # Try treating query as an exact Flatpak app ID
@@ -174,12 +203,14 @@ PYEOF
         exact_name=$(_lookup_name "$query" "flatpak")
         if [ -n "$exact_name" ]; then
             local name="${override_name:-$exact_name}"
-            local canonical_id out_file
+            local canonical_id out_file _remote _remote_display
             canonical_id=$(_resolve_canonical_id "flatpak" "$query")
             out_file=$(module_file "$canonical_id")
+            _remote="${remote:-$(_lookup_flatpak_remote "$query")}"
+            _remote_display=$(_remote_display_name "$_remote")
             _check_or_switch_existing "$canonical_id" "flatpak" "$name" "$out_file" || return
-            _confirm_install "$query" "Flathub" "$query" || return
-            write_flatpak_module "$query" "$name" "$out_file"
+            _confirm_install "$query" "$_remote_display" "$query" || return
+            write_flatpak_module "$query" "$name" "$out_file" "$_remote"
             log "install: Flatpak '${name}' (${query}) [direct]"
             echo "Installed Flatpak: ${name} (${query})"
             trigger_switch "mirror-os: install ${name} (${query}) [Flatpak]"
@@ -204,12 +235,14 @@ PYEOF
         local src id name
         IFS=: read -r src id name <<< "$selection"
         [ -n "$override_name" ] && name="$override_name"
-        local canonical_id out_file
+        local canonical_id out_file _remote _remote_display
         canonical_id=$(_resolve_canonical_id "flatpak" "$id")
         out_file=$(module_file "$canonical_id")
+        _remote="${remote:-$(_lookup_flatpak_remote "$id")}"
+        _remote_display=$(_remote_display_name "$_remote")
         _check_or_switch_existing "$canonical_id" "flatpak" "$name" "$out_file" || return
-        _confirm_install "$id" "Flathub" "$query" || return
-        write_flatpak_module "$id" "$name" "$out_file"
+        _confirm_install "$id" "$_remote_display" "$query" || return
+        write_flatpak_module "$id" "$name" "$out_file" "$_remote"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"
@@ -292,14 +325,17 @@ PYEOF
     canonical_id=$(_resolve_canonical_id "$src" "$id")
     out_file=$(module_file "$canonical_id")
 
-    local src_display="Nix"
-    [ "$src" = "flatpak" ] && src_display="Flathub"
+    local src_display="Nix" _remote=""
+    if [ "$src" = "flatpak" ]; then
+        _remote="${remote:-$(_lookup_flatpak_remote "$id")}"
+        src_display=$(_remote_display_name "$_remote")
+    fi
 
     _check_or_switch_existing "$canonical_id" "$src" "$name" "$out_file" || return
     _confirm_install "$id" "$src_display" "$query" || return
 
     if [ "$src" = "flatpak" ]; then
-        write_flatpak_module "$id" "$name" "$out_file"
+        write_flatpak_module "$id" "$name" "$out_file" "$_remote"
         log "install: Flatpak '${name}' (${id})"
         echo "Installed Flatpak: ${name} (${id})"
         trigger_switch "mirror-os: install ${name} (${id}) [Flatpak]"

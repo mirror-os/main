@@ -4,7 +4,7 @@
 # ── Generate app module files ────────────────────────────────────────────────
 
 write_flatpak_module() {
-    local app_id="$1" app_name="$2" out_file="$3"
+    local app_id="$1" app_name="$2" out_file="$3" remote="${4:-flathub}"
     cat > "$out_file" << EOF
 # ${app_name} — installed via mirror-os
 # To remove: mirror-os uninstall ${app_id}
@@ -12,7 +12,7 @@ write_flatpak_module() {
   services.flatpak = {
     enable = true;
     packages = [
-      { appId = "${app_id}"; origin = "flathub"; }
+      { appId = "${app_id}"; origin = "${remote}"; }
     ];
   };
 }
